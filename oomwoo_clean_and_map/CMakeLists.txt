@@ -12,6 +12,7 @@ find_package(nav2_msgs REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(nav_msgs REQUIRED)
+find_package(rclcpp_action REQUIRED)
 
 if(BUILD_TESTING)
   find_package(ament_lint_auto REQUIRED)
@@ -31,6 +32,7 @@ add_executable(coverage_planner src/coverage_planner.cpp)
 # Link the ROS 2 dependencies to the executable
 ament_target_dependencies(coverage_planner 
   rclcpp 
+  rclcpp_action 
   nav2_msgs 
   geometry_msgs 
   sensor_msgs 
