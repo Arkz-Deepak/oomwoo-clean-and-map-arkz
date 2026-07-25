@@ -38,11 +38,25 @@ ament_target_dependencies(coverage_planner
   sensor_msgs 
   nav_msgs
 )
+add_executable(frontier_interceptor src/frontier_interceptor.cpp)
+ament_target_dependencies(frontier_interceptor 
+  rclcpp 
+  rclcpp_action
+  geometry_msgs 
+  nav_msgs
+  nav2_msgs
+)
 
 # Install the executable so ROS 2 can find it using 'ros2 run'
 install(TARGETS
   coverage_planner
+  frontier_interceptor
   DESTINATION lib/${PROJECT_NAME}
+)
+
+install(DIRECTORY
+  launch
+  DESTINATION share/${PROJECT_NAME}
 )
 
 ament_package()
