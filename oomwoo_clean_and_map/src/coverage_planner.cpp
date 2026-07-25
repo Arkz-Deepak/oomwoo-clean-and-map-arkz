@@ -22,6 +22,10 @@ public:
     }
 
 private:
+    struct GridPoint {
+        int x;
+        int y;
+    };
     void mapCallback(const nav_msgs::msg::OccupancyGrid::SharedPtr msg)
     {
         // This triggers every time the map updates
@@ -33,11 +37,20 @@ private:
 
         int width = msg->info.width;
         int height = msg->info.height;
+        double resolution = msg->info.resolution;
+        
 
-        // Boustrophedon Traversal
-        for (int y = 0; y < height; ++y) {
-            // Even rows go left-to-right, odd rows go right-to-left
-            bool moving_right = (y % 2 == 0);
+        // Define how wide the robot's coverage tool is (e.g., 0.35 meters)
+        double sweep_width = 0.35; 
+        // Convert meters to grid cells (0.35 / 0.05 = 7 cells)
+        int y_step = std::max(1, static_cast<int>(sweep_width / resolution));
+
+        // Boustrophedon Traversal with Sweep Width
+        for (int y = 0; y < height; y += y_step) {
+            
+            // Determine direction based on which sweep row we are on
+            int sweep_row = y / y_step;
+            bool moving_right = (sweep_row % 2 == 0);
 
             int start_x = moving_right ? 0 : width - 1;
             int end_x = moving_right ? width : -1;
@@ -46,21 +59,20 @@ private:
             for (int x = start_x; x != end_x; x += step) {
                 int index = y * width + x;
                 
-                // In ROS 2: 0 = Free space, 100 = Obstacle, -1 = Unknown
+                // Only add waypoints that are in known free space (0)
                 if (msg->data[index] == 0) {
                     path_waypoints_.push_back({x, y});
                 }
             }
         }
 
-        RCLCPP_INFO(this->get_logger(), "Generated %zu Boustrophedon waypoints!", path_waypoints_.size());
+        RCLCPP_INFO(this->get_logger(), "Generated %zu spaced Boustrophedon waypoints!", path_waypoints_.size());
         // Initialize the Path message
         nav_msgs::msg::Path path_msg;
         path_msg.header.frame_id = "map";
         path_msg.header.stamp = this->now();
 
         // Extract map metadata
-        double resolution = msg->info.resolution;
         double origin_x = msg->info.origin.position.x;
         double origin_y = msg->info.origin.position.y;
 
@@ -90,10 +102,7 @@ private:
         RCLCPP_INFO(this->get_logger(), "Published physical path to /coverage_path!");
 
     }
-    struct GridPoint {
-        int x;
-        int y;
-    };
+    
     std::vector<GridPoint> path_waypoints_;
         rclcpp::Subscription<nav_msgs::msg::OccupancyGrid>::SharedPtr map_sub_;
         rclcpp::Publisher<geometry_msgs::msg::Twist>::SharedPtr cmd_vel_pub_;
