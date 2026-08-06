@@ -50,8 +50,8 @@ from nav_msgs.msg import OccupancyGrid, Path
 
 import numpy as np
 
-from visualization_msgs.msg import Marker
-from geometry_msgs.msg import Point
+from nav_msgs.msg import Path
+from geometry_msgs.msg import PoseStamped
 import rclpy
 from rclpy.action import ActionClient
 from rclpy.executors import ExternalShutdownException
@@ -265,18 +265,10 @@ class CoveragePlanner(Node):
         self.create_timer(2.0, self._publish_plan)
         # only used by the wedge escape, while no Nav2 goal is active
         self.cmd_pub = self.create_publisher(Twist, 'cmd_vel', 10)
-        self.trail_pub = self.create_publisher(Marker, '/cleaning_coverage', 10)
-        self.trail_marker = Marker()
-        self.trail_marker.header.frame_id = 'map'
-        self.trail_marker.ns = 'coverage_trail'
-        self.trail_marker.id = 0
-        self.trail_marker.type = Marker.LINE_STRIP
-        self.trail_marker.action = Marker.ADD
-        self.trail_marker.scale.x = 0.2
-        self.trail_marker.color.r = 0.0
-        self.trail_marker.color.g = 1.0
-        self.trail_marker.color.b = 0.0
-        self.trail_marker.color.a = 0.8
+        self.trail_pub = self.create_publisher(Path, '/cleaning_coverage', 10)
+        self.trail_path = Path()
+        self.trail_path.header.frame_id = 'map'
+
         # which bumper is pressed decides which way to peel off (_escape_angular)
         self.create_subscription(Contacts, 'bumper_left/contact', self._bump_left_cb, 10)
         self.create_subscription(Contacts, 'bumper_right/contact', self._bump_right_cb, 10)
@@ -806,13 +798,15 @@ class CoveragePlanner(Node):
         self.cmd_pub.publish(rev)
         pose = self._robot_pose()
         if pose is not None:
-            p = Point()
-            p.x = float(pose[0])
-            p.y = float(pose[1])
-            p.z = 0.05
-            self.trail_marker.points.append(p)
-            self.trail_marker.header.stamp = self.get_clock().now().to_msg()
-            self.trail_pub.publish(self.trail_marker)
+            ps = PoseStamped()
+            ps.header.frame_id = 'map'
+            ps.header.stamp = self.get_clock().now().to_msg()
+            ps.pose.position.x = float(pose[0])
+            ps.pose.position.y = float(pose[1])
+            ps.pose.position.z = 0.05
+            self.trail_path.poses.append(ps)
+            self.trail_path.header.stamp = ps.header.stamp
+            self.trail_pub.publish(self.trail_path)
         if pose is not None:
             rx, ry, ryaw = pose
             ox = rx + 0.15 * float(np.cos(ryaw))
@@ -1036,13 +1030,15 @@ class CoveragePlanner(Node):
             return
         pose = self._robot_pose()
         if pose is not None:
-            p = Point()
-            p.x = float(pose[0])
-            p.y = float(pose[1])
-            p.z = 0.05
-            self.trail_marker.points.append(p)
-            self.trail_marker.header.stamp = self.get_clock().now().to_msg()
-            self.trail_pub.publish(self.trail_marker)
+            ps = PoseStamped()
+            ps.header.frame_id = 'map'
+            ps.header.stamp = self.get_clock().now().to_msg()
+            ps.pose.position.x = float(pose[0])
+            ps.pose.position.y = float(pose[1])
+            ps.pose.position.z = 0.05
+            self.trail_path.poses.append(ps)
+            self.trail_path.header.stamp = ps.header.stamp
+            self.trail_pub.publish(self.trail_path)
         if pose is None:
             return
         if not self._advance_to_target():
