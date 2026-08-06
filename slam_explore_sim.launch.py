@@ -4,6 +4,7 @@ from launch import LaunchDescription
 from launch.actions import IncludeLaunchDescription, DeclareLaunchArgument
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
+from launch_ros.actions import Node
 
 def generate_launch_description():
     use_sim_time = LaunchConfiguration('use_sim_time', default='true')
@@ -34,14 +35,25 @@ def generate_launch_description():
         }.items()
     )
 
-    # 3. m-explore-ros2 (explore_lite) Frontier Exploration Node
-    explore_launch = IncludeLaunchDescription(
-        PythonLaunchDescriptionSource(
-            os.path.join(get_package_share_directory('explore_lite'), 'launch', 'explore.launch.py')
-        ),
-        launch_arguments={
+    # 3. Phase 3 Coverage Path Planner Node (Boustrophedon Cellular Decomposition)
+    coverage_planner_node = Node(
+        package='oomwoo_coverage',
+        executable='coverage_planner',
+        name='coverage_planner',
+        output='screen',
+        parameters=[{
             'use_sim_time': use_sim_time,
-        }.items()
+            'sweep_step_m': 0.3,
+            'robot_radius_m': 0.18,
+            'reach_tolerance_m': 0.25,
+            'align_tolerance_rad': 0.35,
+            'cruise_speed': 0.22,
+            'rotate_speed': 0.6,
+        }],
+        remappings=[
+            ('/map', '/map'),
+            ('/cmd_vel', '/cmd_vel'),
+        ]
     )
 
     return LaunchDescription([
@@ -51,5 +63,5 @@ def generate_launch_description():
         DeclareLaunchArgument('headless', default_value='true'),
         gazebo_launch,
         slam_toolbox_launch,
-        explore_launch,
+        coverage_planner_node,
     ])
