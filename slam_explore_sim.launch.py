@@ -10,7 +10,7 @@ def generate_launch_description():
     use_sim_time = LaunchConfiguration('use_sim_time', default='true')
     world = LaunchConfiguration('world', default='living_room.world')
     robot_model = LaunchConfiguration('robot_model', default='makerspet_snoopy')
-    headless = LaunchConfiguration('headless', default='true')
+    headless = LaunchConfiguration('headless', default='false')
 
     # 1. Gazebo World + Robot Bringup
     gazebo_launch = IncludeLaunchDescription(
@@ -56,12 +56,23 @@ def generate_launch_description():
         ]
     )
 
+    
+    # 4. RViz Graphical Visualization Node
+    rviz_node = Node(
+        package='rviz2',
+        executable='rviz2',
+        name='rviz2',
+        output='screen',
+        parameters=[{'use_sim_time': use_sim_time}],
+    )
+
     return LaunchDescription([
         DeclareLaunchArgument('use_sim_time', default_value='true'),
         DeclareLaunchArgument('world', default_value='living_room.world'),
         DeclareLaunchArgument('robot_model', default_value='makerspet_snoopy'),
-        DeclareLaunchArgument('headless', default_value='true'),
+        DeclareLaunchArgument('headless', default_value='false'),
         gazebo_launch,
         slam_toolbox_launch,
         coverage_planner_node,
+        rviz_node,
     ])
