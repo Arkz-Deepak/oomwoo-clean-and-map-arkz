@@ -1,6 +1,3 @@
-from visualization_msgs.msg import Marker
-from std_msgs.msg import ColorRGBA
-from geometry_msgs.msg import Point
 #!/usr/bin/env python3
 # Copyright 2026 Jayadev Rana
 #
@@ -53,6 +50,8 @@ from nav_msgs.msg import OccupancyGrid, Path
 
 import numpy as np
 
+from visualization_msgs.msg import Marker
+from geometry_msgs.msg import Point
 import rclpy
 from rclpy.action import ActionClient
 from rclpy.executors import ExternalShutdownException
