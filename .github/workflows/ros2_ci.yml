@@ -1,0 +1,38 @@
+name: ROS 2 Clean-and-Map CI Pipeline
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+
+jobs:
+  build_and_test:
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup ROS 2 Jazzy Environment
+        uses: ros-tooling/setup-ros@v0.7
+        with:
+          required-ros-distributions: jazzy
+
+      - name: Install Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ros-jazzy-slam-toolbox ros-jazzy-ros-gz
+          rosdep update
+          rosdep install --from-paths . --ignore-src -y
+
+      - name: Build Workspace
+        run: |
+          source /opt/ros/jazzy/setup.bash
+          colcon build --symlink-install
+
+      - name: Run Regression Launch Tests
+        run: |
+          source /opt/ros/jazzy/setup.bash
+          source install/setup.bash
+          colcon test --event-handlers console_direct+ --ctest-args -R launch_test
