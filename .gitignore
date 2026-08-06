@@ -1,0 +1,26 @@
+# ROS 2 / Colcon build artifacts
+build/
+install/
+log/
+
+# ROS / Python cache & bytecode
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+
+# ROS 2 log and database files
+*.log
+*.mcap
+*.db3
+
+# Editor / IDE settings
+.vscode/
+.idea/
+*.swp
+*~
+
+# OS generated files
+.DS_Store
+Thumbs.db
