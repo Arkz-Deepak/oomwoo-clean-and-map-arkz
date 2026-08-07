@@ -1,3 +1,5 @@
+from nav_msgs.msg import Path
+from geometry_msgs.msg import PoseStamped
 #!/usr/bin/env python3
 # Copyright 2026 Jayadev Rana
 #
@@ -50,8 +52,6 @@ from nav_msgs.msg import OccupancyGrid, Path
 
 import numpy as np
 
-from nav_msgs.msg import Path
-from geometry_msgs.msg import PoseStamped
 import rclpy
 from rclpy.action import ActionClient
 from rclpy.executors import ExternalShutdownException
@@ -212,9 +212,7 @@ class CoveragePlanner(Node):
         self.consecutive_skips = 0
         self.escape_until = None
         self._bump_left_t = None       # last /bumper_left/contact time
-        self._bump_right_t = None
-        self._bump_front_t = None
-        self._bump_front_held_since = None      # last /bumper_right/contact time
+        self._bump_right_t = None      # last /bumper_right/contact time
         self._bump_left_held_since = None   # start of the current L contact episode
         self._bump_right_held_since = None  # start of the current R contact episode
         self._escape_az = 0.0          # angular.z applied during the active escape
@@ -268,12 +266,9 @@ class CoveragePlanner(Node):
         self.trail_pub = self.create_publisher(Path, '/cleaning_coverage', 10)
         self.trail_path = Path()
         self.trail_path.header.frame_id = 'map'
-
         # which bumper is pressed decides which way to peel off (_escape_angular)
         self.create_subscription(Contacts, 'bumper_left/contact', self._bump_left_cb, 10)
         self.create_subscription(Contacts, 'bumper_right/contact', self._bump_right_cb, 10)
-        self.create_subscription(Contacts, 'bumper_front/contact', self._bump_front_cb, 10)
-        self.create_subscription(Contacts, 'bumper/contact', self._bump_front_cb, 10)
         self.nav_client = ActionClient(
             self, NavigateToPose, 'navigate_to_pose')
 
@@ -780,40 +775,6 @@ class CoveragePlanner(Node):
                     or self._elapsed(self._bump_right_t) >= self.bumper_fresh_sec:
                 self._bump_right_held_since = now
             self._bump_right_t = now
-
-    def _bump_front_cb(self, msg: Contacts) -> None:
-        if msg.contacts:
-            now = self.get_clock().now()
-            if self._bump_front_t is None or self._elapsed(self._bump_front_t) >= self.bumper_fresh_sec:
-                self._bump_front_held_since = now
-            self._bump_front_t = now
-            self._handle_bumper_collision()
-
-    def _handle_bumper_collision(self) -> None:
-        self.get_logger().warn('Bumper collision detected! Executing halt, reverse 0.15m, obstacle mark & replan.')
-        halt = Twist()
-        self.cmd_pub.publish(halt)
-        rev = Twist()
-        rev.linear.x = -0.1
-        self.cmd_pub.publish(rev)
-        pose = self._robot_pose()
-        if pose is not None:
-            ps = PoseStamped()
-            ps.header.frame_id = 'map'
-            ps.header.stamp = self.get_clock().now().to_msg()
-            ps.pose.position.x = float(pose[0])
-            ps.pose.position.y = float(pose[1])
-            ps.pose.position.z = 0.05
-            self.trail_path.poses.append(ps)
-            self.trail_path.header.stamp = ps.header.stamp
-            self.trail_pub.publish(self.trail_path)
-        if pose is not None:
-            rx, ry, ryaw = pose
-            ox = rx + 0.15 * float(np.cos(ryaw))
-            oy = ry + 0.15 * float(np.sin(ryaw))
-            self.get_logger().info(f'Marked bumper obstacle at x={ox:.2f}, y={oy:.2f}')
-            self.wp_index = min(self.wp_index + 1, max(0, len(self.cached_poses) - 1))
-
 
     def _bumper_fresh(self, t) -> bool:
         return t is not None and self._elapsed(t) < self.bumper_fresh_sec
