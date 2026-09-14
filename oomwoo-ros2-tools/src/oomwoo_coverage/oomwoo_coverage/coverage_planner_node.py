@@ -576,8 +576,12 @@ class CoveragePlanner(Node):
     # timeout prevents Nav2 from grinding on a hard pose.
     def _start_plan(self) -> None:
         self.last_attempt = self.get_clock().now()
+        pose = self._robot_pose()
+        if pose is not None:
+            self.robot_xy = (pose[0], pose[1])
+            self.robot_yaw = pose[2]
         if self.robot_xy is None:
-            self.get_logger().info('waiting for robot pose (amcl)...')
+            self.get_logger().info('waiting for robot pose (TF / amcl)...')
             return
         if self.cached_poses is None:
             poses = self._plan_waypoints()
@@ -589,7 +593,7 @@ class CoveragePlanner(Node):
             self._publish_plan()
             self.get_logger().info(
                 f'coverage plan: {len(poses)} waypoints, executing sequentially')
-        if not self.nav_client.server_is_ready():
+        if self.exec_mode == 'nav2' and not self.nav_client.server_is_ready():
             self.nav_client.wait_for_server(timeout_sec=0.0)
             self.get_logger().info('waiting for navigate_to_pose server...')
             return
