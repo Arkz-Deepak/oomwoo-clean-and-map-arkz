@@ -1011,10 +1011,9 @@ class CoveragePlanner(Node):
         rx, ry, ryaw = pose
         dx, dy = tx - rx, ty - ry
         dist = (dx * dx + dy * dy) ** 0.5
-        # long inter-cell hop: route via Nav2 (avoid plowing through furniture)
-        if dist > self.min_transit_len:
-            if self.nav_client.server_is_ready():
-                self._send_goal_to(target)
+        # long inter-cell hop: route via Nav2 IF server is active, else drive reactively
+        if dist > self.min_transit_len and self.nav_client.server_is_ready():
+            self._send_goal_to(target)
             return
         if dist <= self.reach_tol:              # reached this pass waypoint
             self.wp_index += 1
