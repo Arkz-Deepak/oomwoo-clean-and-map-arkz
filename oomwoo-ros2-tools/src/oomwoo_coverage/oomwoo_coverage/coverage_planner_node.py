@@ -1,5 +1,3 @@
-from nav_msgs.msg import Path
-from geometry_msgs.msg import PoseStamped
 #!/usr/bin/env python3
 # Copyright 2026 Jayadev Rana
 #

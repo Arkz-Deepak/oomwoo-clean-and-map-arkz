@@ -1,3 +1,15 @@
+#!/usr/bin/env python3
+"""
+Clean-and-Map Square Room Launch File
+=====================================
+Launches automated cleaning and simultaneous mapping in a clean 6x6m square room:
+  1. Gazebo Sim with square_room.world
+  2. Robot state publisher & ros_gz_bridge
+  3. SLAM Toolbox (online_async_launch)
+  4. Boustrophedon Coverage Planner (oomwoo_coverage)
+  5. RViz2 visualization
+"""
+
 import os
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
@@ -8,11 +20,15 @@ from launch_ros.actions import Node
 
 def generate_launch_description():
     use_sim_time = LaunchConfiguration('use_sim_time', default='true')
-    world = LaunchConfiguration('world', default='living_room.sdf')
-    robot_model = LaunchConfiguration('robot_model', default='makerspet_snoopy')
+    default_world = os.path.join(
+        get_package_share_directory('oomwoo_sim_support'),
+        'worlds',
+        'square_room.world'
+    )
+    world = LaunchConfiguration('world', default=default_world)
     headless = LaunchConfiguration('headless', default='false')
 
-    # 1. Gazebo World + Robot Bringup
+    # 1. Gazebo Sim World + Robot
     gazebo_launch = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
             os.path.join(get_package_share_directory('oomwoo_gazebo'), 'launch', 'sim.launch.py')
@@ -20,13 +36,12 @@ def generate_launch_description():
         launch_arguments={
             'use_sim_time': use_sim_time,
             'world': world,
-            'robot_model': robot_model,
             'headless': headless,
         }.items()
     )
 
-    # 2. SLAM Toolbox Online Async Node
-    slam_toolbox_launch = IncludeLaunchDescription(
+    # 2. SLAM Toolbox
+    slam_launch = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
             os.path.join(get_package_share_directory('slam_toolbox'), 'launch', 'online_async_launch.py')
         ),
@@ -35,7 +50,7 @@ def generate_launch_description():
         }.items()
     )
 
-    # 3. Phase 3 Coverage Path Planner Node (Boustrophedon Cellular Decomposition)
+    # 3. Autonomous Boustrophedon Coverage Planner
     coverage_planner_node = Node(
         package='oomwoo_coverage',
         executable='coverage_planner',
@@ -43,12 +58,13 @@ def generate_launch_description():
         output='screen',
         parameters=[{
             'use_sim_time': use_sim_time,
-            'sweep_step_m': 0.3,
-            'robot_radius_m': 0.18,
-            'reach_tolerance_m': 0.25,
+            'sweep_step_m': 0.35,
+            'robot_radius_m': 0.17,
+            'reach_tolerance_m': 0.20,
             'align_tolerance_rad': 0.35,
-            'cruise_speed': 0.22,
-            'rotate_speed': 0.6,
+            'cruise_speed': 0.25,
+            'rotate_speed': 0.8,
+            'executor': 'reactive',
         }],
         remappings=[
             ('/map', '/map'),
@@ -56,8 +72,7 @@ def generate_launch_description():
         ]
     )
 
-    
-    # 4. RViz Graphical Visualization Node
+    # 4. RViz2
     rviz_node = Node(
         package='rviz2',
         executable='rviz2',
@@ -68,11 +83,10 @@ def generate_launch_description():
 
     return LaunchDescription([
         DeclareLaunchArgument('use_sim_time', default_value='true'),
-        DeclareLaunchArgument('world', default_value='living_room.world'),
-        DeclareLaunchArgument('robot_model', default_value='makerspet_snoopy'),
+        DeclareLaunchArgument('world', default_value=default_world),
         DeclareLaunchArgument('headless', default_value='false'),
         gazebo_launch,
-        slam_toolbox_launch,
+        slam_launch,
         coverage_planner_node,
         rviz_node,
     ])

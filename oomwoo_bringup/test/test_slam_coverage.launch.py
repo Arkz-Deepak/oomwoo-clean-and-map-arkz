@@ -13,11 +13,16 @@ from launch.substitutions import LaunchConfiguration
 
 def generate_test_description():
     use_sim_time = LaunchConfiguration('use_sim_time', default='true')
-    world = LaunchConfiguration('world', default='living_room.world')
+    default_world_path = os.path.join(
+        get_package_share_directory('oomwoo_sim_support'),
+        'worlds',
+        'square_room.world'
+    )
+    world = LaunchConfiguration('world', default=default_world_path)
 
     gazebo_launch = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
-            os.path.join(get_package_share_directory('oomwoo_gazebo'), 'launch', 'world.launch.py')
+            os.path.join(get_package_share_directory('oomwoo_gazebo'), 'launch', 'sim.launch.py')
         ),
         launch_arguments={'use_sim_time': use_sim_time, 'world': world, 'headless': 'true'}.items()
     )
@@ -31,7 +36,7 @@ def generate_test_description():
 
     return launch.LaunchDescription([
         DeclareLaunchArgument('use_sim_time', default_value='true'),
-        DeclareLaunchArgument('world', default_value='living_room.world'),
+        DeclareLaunchArgument('world', default_value=default_world_path),
         gazebo_launch,
         slam_launch,
         launch_testing.actions.ReadyToTest(),
