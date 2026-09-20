@@ -12,9 +12,10 @@ Single-package launch file for automated cleaning and SLAM mapping:
 """
 
 import os
+import subprocess
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, ExecuteProcess, IncludeLaunchDescription, SetEnvironmentVariable, TimerAction
+from launch.actions import DeclareLaunchArgument, ExecuteProcess, IncludeLaunchDescription, SetEnvironmentVariable, Shutdown, TimerAction
 from launch.conditions import IfCondition, UnlessCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import Command, LaunchConfiguration
@@ -22,6 +23,9 @@ from launch_ros.actions import Node
 
 
 def generate_launch_description():
+    # Clean up any orphaned Gazebo processes from previous runs to prevent multiple robot spawns
+    subprocess.run(['killall', '-q', '-9', 'gz-sim-server', 'gz-sim-gui'], stderr=subprocess.DEVNULL)
+
     pkg_name = 'oomwoo_clean_and_map'
     pkg_dir = get_package_share_directory(pkg_name)
     pkg_slam = get_package_share_directory('slam_toolbox')
@@ -38,12 +42,14 @@ def generate_launch_description():
     gz_server_headless = ExecuteProcess(
         cmd=['gz', 'sim', '-s', '-r', '--headless-rendering', world],
         output='screen',
+        on_exit=Shutdown(),
         condition=IfCondition(headless),
     )
 
     gz_server_gui = ExecuteProcess(
         cmd=['gz', 'sim', '-r', '--gui-config', gui_config, world],
         output='screen',
+        on_exit=Shutdown(),
         condition=UnlessCondition(headless),
     )
 
