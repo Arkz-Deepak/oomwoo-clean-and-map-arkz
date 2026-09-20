@@ -29,8 +29,8 @@ def generate_launch_description():
     use_sim_time = LaunchConfiguration('use_sim_time', default='true')
     default_world = os.path.join(pkg_dir, 'worlds', 'square_room.world')
     world = LaunchConfiguration('world', default=default_world)
-    headless = LaunchConfiguration('headless', default='true')
-    rviz = LaunchConfiguration('rviz', default='false')
+    headless = LaunchConfiguration('headless', default='false')
+    rviz = LaunchConfiguration('rviz', default='true')
 
     # 1. Gazebo Sim Server (Headless or GUI)
     gz_server_headless = ExecuteProcess(
@@ -135,8 +135,8 @@ def generate_launch_description():
         SetEnvironmentVariable('LIBGL_ALWAYS_SOFTWARE', '1'),
         DeclareLaunchArgument('use_sim_time', default_value='true'),
         DeclareLaunchArgument('world', default_value=default_world),
-        DeclareLaunchArgument('headless', default_value='true'),
-        DeclareLaunchArgument('rviz', default_value='false'),
+        DeclareLaunchArgument('headless', default_value='false'),
+        DeclareLaunchArgument('rviz', default_value='true'),
         gz_server_headless,
         gz_server_gui,
         bridge,

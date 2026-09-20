@@ -74,6 +74,27 @@
     <xacro:solid_sphere_inertia m="${caster_mass}" r="${caster_diameter/2}"/>
   </link>
 
+  <joint name="caster_front_joint" type="fixed">
+    <parent link="base_link"/>
+    <child link="caster_front_link"/>
+    <origin xyz="${base_diameter/2 - caster_inset} 0 ${caster_diameter/2 - floor_clearance}" rpy="0 0 0"/>
+  </joint>
+
+  <link name="caster_front_link">
+    <visual>
+      <geometry>
+        <sphere radius="${caster_diameter/2}"/>
+      </geometry>
+      <material name="grey"/>
+    </visual>
+    <collision>
+      <geometry>
+        <sphere radius="${caster_diameter/2}"/>
+      </geometry>
+    </collision>
+    <xacro:solid_sphere_inertia m="${caster_mass}" r="${caster_diameter/2}"/>
+  </link>
+
   <joint name="wheel_left_joint" type="continuous">
     <parent link="base_link"/>
     <child link="wheel_left_link"/>
@@ -190,6 +211,11 @@
   </link>
 
   <gazebo reference="caster_link">
+    <mu1>0.001</mu1>
+    <mu2>0.001</mu2>
+  </gazebo>
+
+  <gazebo reference="caster_front_link">
     <mu1>0.001</mu1>
     <mu2>0.001</mu2>
   </gazebo>
