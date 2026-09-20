@@ -4,7 +4,7 @@ project(oomwoo_clean_and_map)
 find_package(ament_cmake REQUIRED)
 
 install(
-  DIRECTORY launch urdf config worlds
+  DIRECTORY launch urdf config worlds models maps
   DESTINATION share/${PROJECT_NAME}
 )
 

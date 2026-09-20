@@ -124,9 +124,10 @@ class CoveragePlanner(Node):
         self.long_axis_sweep = self.get_parameter('long_axis_sweep').value
         self.coverage_target = self.get_parameter('coverage_target').value
         self.stop_at_target = self.get_parameter('stop_at_target').value
-        self.sweep_axis = self.get_parameter('sweep_axis').value
         self.global_frame = self.get_parameter('global_frame').value
         self.base_frame = self.get_parameter('robot_base_frame').value
+        self.declare_parameter('obstacle_inflation', 0.10)
+        self.obstacle_inflation = self.get_parameter('obstacle_inflation').value
         self.min_segment_len = self.get_parameter('min_segment_len').value
 
         # --- state --------------------------------------------------------
@@ -422,8 +423,8 @@ class CoveragePlanner(Node):
         grid = np.asarray(self.map_msg.data, dtype=np.int16).reshape(h, w)
 
         obstacle = grid >= OCC_THRESH
-        # Inflate obstacles (walls) by 0.06 m so waypoints reach right up to walls
-        infl = max(1, int(round(0.06 / info.resolution)))
+        # Inflate obstacles (walls/furniture) by obstacle_inflation (default 0.10 m)
+        infl = max(1, int(round(self.obstacle_inflation / info.resolution)))
         blocked = _dilate(obstacle, infl)
         free = (grid == FREE) & ~blocked
 
