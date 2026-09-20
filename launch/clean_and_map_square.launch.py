@@ -32,6 +32,8 @@ def generate_launch_description():
     headless = LaunchConfiguration('headless', default='false')
     rviz = LaunchConfiguration('rviz', default='true')
 
+    gui_config = os.path.join(pkg_dir, 'config', 'gazebo_gui_square.config')
+
     # 1. Gazebo Sim Server (Headless or GUI)
     gz_server_headless = ExecuteProcess(
         cmd=['gz', 'sim', '-s', '-r', '--headless-rendering', world],
@@ -40,7 +42,7 @@ def generate_launch_description():
     )
 
     gz_server_gui = ExecuteProcess(
-        cmd=['gz', 'sim', '-r', world],
+        cmd=['gz', 'sim', '-r', '--gui-config', gui_config, world],
         output='screen',
         condition=UnlessCondition(headless),
     )
@@ -76,21 +78,17 @@ def generate_launch_description():
     )
 
     # 4. Spawn Robot Entity in Gazebo
-    spawn_entity = TimerAction(
-        period=3.0,
-        actions=[
-            Node(
-                package='ros_gz_sim',
-                executable='create',
-                arguments=[
-                    '-world', 'default',
-                    '-name', 'oomwoo',
-                    '-string', Command(['xacro ', os.path.join(pkg_dir, 'urdf', 'robot.urdf.xacro')]),
-                    '-z', '0.05',
-                ],
-                output='screen',
-            )
+    spawn_entity = Node(
+        package='ros_gz_sim',
+        executable='create',
+        arguments=[
+            '-world', 'default',
+            '-name', 'oomwoo',
+            '-topic', 'robot_description',
+            '-z', '0.05',
+            '-allow_renaming', 'false',
         ],
+        output='screen',
     )
 
     # 5. RViz2 (Conditional)

@@ -42,7 +42,7 @@
       <geometry>
         <cylinder length="${top_height}" radius="${base_diameter/2}"/>
       </geometry>
-      <material name="white"/>
+      <material name="cyan"/>
     </visual>
     <collision>
       <origin xyz="0 0 ${top_height/2}" rpy="0 0 0"/>
@@ -210,6 +210,36 @@
     <xacro:solid_box_inertia m="${bumper_mass/2}" x="${bumper_depth}" y="${bumper_width}" z="${bumper_height}"/>
   </link>
 
+  <gazebo reference="base_link">
+    <visual>
+      <material>
+        <ambient>0.15 0.15 0.15 1.0</ambient>
+        <diffuse>0.2 0.2 0.2 1.0</diffuse>
+        <specular>0.2 0.2 0.2 1.0</specular>
+      </material>
+    </visual>
+  </gazebo>
+
+  <gazebo reference="top_link">
+    <visual>
+      <material>
+        <ambient>0.0 0.5 0.8 1.0</ambient>
+        <diffuse>0.0 0.72 0.95 1.0</diffuse>
+        <specular>0.4 0.4 0.4 1.0</specular>
+      </material>
+    </visual>
+  </gazebo>
+
+  <gazebo reference="base_scan">
+    <visual>
+      <material>
+        <ambient>0.05 0.05 0.05 1.0</ambient>
+        <diffuse>0.1 0.1 0.1 1.0</diffuse>
+        <specular>0.8 0.8 0.8 1.0</specular>
+      </material>
+    </visual>
+  </gazebo>
+
   <gazebo reference="caster_link">
     <mu1>0.001</mu1>
     <mu2>0.001</mu2>
@@ -221,20 +251,44 @@
   </gazebo>
 
   <gazebo reference="wheel_left_link">
+    <visual>
+      <material>
+        <ambient>0.1 0.1 0.1 1.0</ambient>
+        <diffuse>0.15 0.15 0.15 1.0</diffuse>
+      </material>
+    </visual>
     <mu1>1.0</mu1>
     <mu2>1.0</mu2>
   </gazebo>
 
   <gazebo reference="wheel_right_link">
+    <visual>
+      <material>
+        <ambient>0.1 0.1 0.1 1.0</ambient>
+        <diffuse>0.15 0.15 0.15 1.0</diffuse>
+      </material>
+    </visual>
     <mu1>1.0</mu1>
     <mu2>1.0</mu2>
   </gazebo>
 
   <gazebo reference="bumper_left_link">
+    <visual>
+      <material>
+        <ambient>0.9 0.4 0.0 1.0</ambient>
+        <diffuse>1.0 0.5 0.0 1.0</diffuse>
+      </material>
+    </visual>
     <self_collide>false</self_collide>
   </gazebo>
 
   <gazebo reference="bumper_right_link">
+    <visual>
+      <material>
+        <ambient>0.9 0.4 0.0 1.0</ambient>
+        <diffuse>1.0 0.5 0.0 1.0</diffuse>
+      </material>
+    </visual>
     <self_collide>false</self_collide>
   </gazebo>
 </robot>
