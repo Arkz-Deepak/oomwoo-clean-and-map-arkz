@@ -53,6 +53,7 @@ from nav_msgs.msg import OccupancyGrid, Path
 from sensor_msgs.msg import LaserScan
 
 import numpy as np
+import scipy.ndimage as ndi
 
 import rclpy
 from rclpy.action import ActionClient
@@ -420,13 +421,18 @@ class CoveragePlanner(Node):
         grid = np.asarray(self.map_msg.data, dtype=np.int16).reshape(h, w)
 
         obstacle = grid >= OCC_THRESH
-        # Inflate obstacles (walls) by 0.10 m so the robot can clean close to walls
-        infl = max(1, int(round(0.10 / info.resolution)))
+        # Inflate obstacles (walls) by 0.06 m so waypoints reach right up to walls
+        infl = max(1, int(round(0.06 / info.resolution)))
         blocked = _dilate(obstacle, infl)
         free = (grid == FREE) & ~blocked
 
         if self.keepout is not None and self.keepout.shape == free.shape:
             free &= ~self.keepout
+
+        # Morphological closing and hole-filling to eliminate SLAM noise & dropouts (< 25 cm)
+        gap_cells = max(1, int(round(0.25 / info.resolution)))
+        free = ndi.binary_closing(free, structure=np.ones((gap_cells, gap_cells)))
+        free = ndi.binary_fill_holes(free)
 
         self.free_mask = free
         self.total_free_cells = int(free.sum())
@@ -456,10 +462,8 @@ class CoveragePlanner(Node):
                             self.wedge_zones)
 
     def _skip_waypoint(self, idx) -> bool:
-        """Skip a waypoint that's already clean or inside a no-go pocket."""
+        """Skip a waypoint inside a recorded no-go pocket."""
         pose = self.cached_poses[idx]
-        if self._covered_at(pose):
-            return True
         if self._in_wedge_zone(pose):
             return True
         return False
@@ -522,6 +526,10 @@ class CoveragePlanner(Node):
             self.get_logger().warn('robot not on reachable free space')
             return []
         reachable = _flood_fill(self.free_mask, seed)
+        # Fill holes and close minor gaps on reachable to prevent cell fragmentation
+        gap_cells = max(1, int(round(0.25 / res)))
+        reachable = ndi.binary_fill_holes(reachable)
+        reachable = ndi.binary_closing(reachable, structure=np.ones((gap_cells, gap_cells)))
         # keep for gap-fill: its targets must obey the same reachability
         # invariant as the sweep, or disconnected free islands (e.g. the
         # outside-the-walls region some maps load as free) get re-targeted
@@ -545,7 +553,7 @@ class CoveragePlanner(Node):
         # buys an extra transit + turns. Dropping these de-fragments the plan
         # (the cluttered living_room sheds its ring of furniture-corner slivers).
         cells = [c for c in cells
-                 if max(len(c), max(b - a + 1 for _, a, b in c)) > step]
+                 if len(c) >= 2 and max(b - a + 1 for _, a, b in c) >= step]
 
         # intermediate waypoints along each pass keep the robot ON the straight
         # line: with only two endpoints the controller cuts the corner toward the
@@ -592,9 +600,18 @@ class CoveragePlanner(Node):
             m, r0, c_lo, vertical = cd['m'], cd['r0'], cd['c_lo'], cd['vertical']
             h, w = m.shape
             n_major = w if vertical else h
-            major = list(range(0, n_major, step))
-            if major[-1] != n_major - 1:
-                major.append(n_major - 1)
+
+            # Side wall clearance: offset passes by robot_radius so robot doesn't scrape side walls
+            clearance = max(1, int(round((self.robot_radius - 0.02) / res)))
+            i_start = clearance
+            i_end = n_major - 1 - clearance
+            if i_end > i_start:
+                span = i_end - i_start
+                num_passes = max(1, int(round(span / step)))
+                major = [int(round(i_start + i * span / num_passes)) for i in range(num_passes + 1)]
+            else:
+                major = [(i_start + i_end) // 2]
+
             if major_last:
                 major.reverse()
             pts = []
@@ -605,9 +622,8 @@ class CoveragePlanner(Node):
                     a, b = int(run[0]), int(run[-1])
                     if b - a + 1 < min_seg_cells:
                         continue
-                    ks = list(range(a, b + 1, substep))
-                    if ks[-1] != b:
-                        ks.append(b)
+                    n_sub = max(1, int(round((b - a) / substep)))
+                    ks = [int(round(a + k * (b - a) / n_sub)) for k in range(n_sub + 1)]
                     if flip:
                         ks.reverse()
                     for k in ks:
@@ -1173,7 +1189,22 @@ class CoveragePlanner(Node):
             self.bumper_touched = False
             self.get_logger().info(
                 f'Wall contact detected via bumper near waypoint {self.wp_index}. Rebounding and advancing to next pass.')
-            self.wp_index += 1
+
+            # Advance wp_index to the first waypoint belonging to the NEXT row
+            if self.cached_poses is not None and self.wp_index < len(self.cached_poses):
+                cur_p = self.cached_poses[self.wp_index].pose.position
+                next_idx = self.wp_index + 1
+                while next_idx < len(self.cached_poses):
+                    np_pos = self.cached_poses[next_idx].pose.position
+                    # Check distance perpendicular to pass direction (row change >= 0.15m)
+                    d_row = max(abs(np_pos.y - cur_p.y), abs(np_pos.x - cur_p.x))
+                    if d_row >= 0.15:
+                        break
+                    next_idx += 1
+                self.wp_index = next_idx
+            else:
+                self.wp_index += 1
+
             self.wp_retries = 0
             self.consecutive_skips = 0
             self._drive_best_dist = None
