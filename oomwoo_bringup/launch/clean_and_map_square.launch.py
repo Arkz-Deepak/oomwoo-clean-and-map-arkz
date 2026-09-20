@@ -69,6 +69,7 @@ def generate_launch_description():
         package='robot_state_publisher',
         executable='robot_state_publisher',
         parameters=[{
+            'use_sim_time': use_sim_time,
             'robot_description': Command(
                 ['xacro ', os.path.join(pkg_bringup, 'urdf', 'robot.urdf.xacro')]
             )
@@ -97,11 +98,15 @@ def generate_launch_description():
     )
 
     # 6. SLAM Toolbox (Online Async)
+    slam_params = os.path.join(pkg_bringup, 'config', 'slam_square_room.yaml')
     slam_launch = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
             os.path.join(pkg_slam, 'launch', 'online_async_launch.py')
         ),
-        launch_arguments={'use_sim_time': use_sim_time}.items()
+        launch_arguments={
+            'use_sim_time': use_sim_time,
+            'slam_params_file': slam_params,
+        }.items()
     )
 
     # 7. Autonomous Coverage Planner
@@ -113,11 +118,11 @@ def generate_launch_description():
         parameters=[{
             'use_sim_time': use_sim_time,
             'executor': 'reactive',
-            'v_cruise': 0.30,
-            'rotate_speed': 0.8,
+            'v_cruise': 0.25,
+            'rotate_speed': 0.4,
             'robot_radius': 0.17,
             'reach_tol': 0.20,
-            'align_tol': 0.35,
+            'align_tol': 0.30,
         }],
         remappings=[
             ('/map', '/map'),

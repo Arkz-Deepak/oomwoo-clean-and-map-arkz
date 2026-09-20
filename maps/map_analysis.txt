@@ -7,24 +7,24 @@ Output Files:
 
 Grid Specifications:
   - Resolution: 0.0500 m/cell
-  - Grid Size: 121 x 122 cells
-  - Total Map Extent: 6.05 m x 6.10 m
-  - Origin: (-3.040, -3.045)
+  - Grid Size: 127 x 129 cells
+  - Total Map Extent: 6.35 m x 6.45 m
+  - Origin: (-3.240, -3.205)
 
 Occupancy Breakdown:
-  - Free Cells (Floor): 12,543 (85.0%)
-  - Occupied Cells (Walls): 992 (6.7%)
-  - Unknown Cells: 1,227 (8.3%)
+  - Free Cells (Floor): 13,473 (82.2%)
+  - Occupied Cells (Walls): 1,778 (10.9%)
+  - Unknown Cells: 1,132 (6.9%)
 
 Geometric Reconstruction:
-  - Mapped Free Area: 31.36 m^2 (Target: 36.00 m^2)
-  - Estimated Room Width (X): 6.00 m (Expected: 6.00 m)
-  - Estimated Room Length (Y): 6.05 m (Expected: 6.00 m)
-  - Wall X Bounds: [-3.04 m, 2.96 m]
-  - Wall Y Bounds: [-3.05 m, 3.00 m]
-  - Interior Free Bounds: X in [-2.94, 2.96], Y in [-2.95, 2.95]
+  - Mapped Free Area: 33.68 m^2 (Target: 36.00 m^2)
+  - Estimated Room Width (X): 6.30 m (Expected: 6.00 m)
+  - Estimated Room Length (Y): 6.40 m (Expected: 6.00 m)
+  - Wall X Bounds: [-3.24 m, 3.06 m]
+  - Wall Y Bounds: [-3.20 m, 3.20 m]
+  - Interior Free Bounds: X in [-3.09, 2.96], Y in [-3.05, 3.00]
 
 Quality Assessment:
-  - Coverage Completeness: 87.1% of 6x6m floor area mapped
-  - Aspect Ratio: 0.99 (Expected: 1.00 for square room)
+  - Coverage Completeness: 93.6% of 6x6m floor area mapped
+  - Aspect Ratio: 0.98 (Expected: 1.00 for square room)
 ==================================================
