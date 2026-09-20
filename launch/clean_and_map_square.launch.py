@@ -126,7 +126,7 @@ def generate_launch_description():
             'v_cruise': 0.25,
             'rotate_speed': 0.4,
             'robot_radius': 0.17,
-            'reach_tol': 0.20,
+            'reach_tol': 0.12,
             'align_tol': 0.30,
         }],
         remappings=[

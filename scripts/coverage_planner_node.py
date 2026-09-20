@@ -50,6 +50,8 @@ from visualization_msgs.msg import Marker
 
 from nav_msgs.msg import OccupancyGrid, Path
 
+from sensor_msgs.msg import LaserScan
+
 import numpy as np
 
 import rclpy
@@ -282,15 +284,34 @@ class CoveragePlanner(Node):
         self.trail_marker.points = []
         self.ratio_pub = self.create_publisher(Float32, 'coverage_ratio', 10)
         self.covered_pub = self.create_publisher(OccupancyGrid, 'covered_grid', latched_qos())
-        # which bumper is pressed decides which way to peel off (_escape_angular)
-        self.create_subscription(Contacts, 'bumper_left/contact', self._bump_left_cb, 10)
-        self.create_subscription(Contacts, 'bumper_right/contact', self._bump_right_cb, 10)
+        self.front_wall_dist = 2.0
+        self.bumper_touched = False
+        self.wall_rebound_until = None
+        # Connect to bumper contact topics and LiDAR scan
+        self.create_subscription(Contacts, '/bumper_left', self._bump_left_cb, 10)
+        self.create_subscription(Contacts, '/bumper_right', self._bump_right_cb, 10)
+        self.create_subscription(LaserScan, '/scan', self._on_scan, 10)
         self.nav_client = ActionClient(
             self, NavigateToPose, 'navigate_to_pose')
 
         # 5 Hz coverage accounting; planning kicks off once the map arrives
         self.create_timer(0.2, self._tick)
         self.get_logger().info('coverage_planner up; waiting for /map')
+
+    def _on_scan(self, msg: LaserScan) -> None:
+        """Extract distance to obstacle/wall directly ahead of robot."""
+        ranges = np.asarray(msg.ranges)
+        if ranges.size == 0:
+            return
+        n = len(ranges)
+        deg35 = int(round(35.0 / 360.0 * n))
+        fwd_idx = np.concatenate([np.arange(0, deg35 + 1), np.arange(n - deg35, n)])
+        valid = ranges[fwd_idx]
+        valid = valid[(valid >= 0.12) & np.isfinite(valid)]
+        if valid.size > 0:
+            self.front_wall_dist = float(np.min(valid))
+        else:
+            self.front_wall_dist = 2.0
 
     # ---------------------------------------------------------------- maps
     def _on_map(self, msg: OccupancyGrid) -> None:
@@ -329,10 +350,11 @@ class CoveragePlanner(Node):
         if first_map:
             self.get_logger().info(
                 f'SLAM map received: {w}x{h} @ {res:.3f} m, {self.total_free_cells} reachable free cells')
-        elif self.plan_started and not self.finished and self.total_free_cells > prev_free + 150:
-            self.get_logger().info(
-                f'SLAM map expanded: {self.total_free_cells} free cells (+{self.total_free_cells - prev_free}). Replanning to cover newly mapped space.')
-            self._replan_expanded()
+        elif self.plan_started and not self.finished and self.wp_index >= len(self.cached_poses):
+            if self.total_free_cells > prev_free + 50:
+                self.get_logger().info(
+                    f'SLAM map expanded: {self.total_free_cells} free cells (+{self.total_free_cells - prev_free}). Planning for newly mapped space.')
+                self._replan_expanded()
 
     def _replan_expanded(self) -> None:
         """Replan coverage over newly expanded SLAM map while preserving progress."""
@@ -349,6 +371,12 @@ class CoveragePlanner(Node):
             self._publish_plan()
             self.get_logger().info(
                 f'Dynamic replan: {len(active_poses)} uncleaned waypoints scheduled on updated SLAM map')
+        else:
+            gaps = self._gapfill_waypoints()
+            if gaps:
+                self.cached_poses = gaps
+                self.wp_index = 0
+                self._publish_plan()
 
     def _update_coverage(self, pose) -> None:
         """Mark cells within cleaning_radius of robot pose as covered."""
@@ -392,8 +420,8 @@ class CoveragePlanner(Node):
         grid = np.asarray(self.map_msg.data, dtype=np.int16).reshape(h, w)
 
         obstacle = grid >= OCC_THRESH
-        # Inflate obstacles (walls) by robot radius so the center path is safe
-        infl = max(1, int(round(self.robot_radius / info.resolution)))
+        # Inflate obstacles (walls) by 0.10 m so the robot can clean close to walls
+        infl = max(1, int(round(0.10 / info.resolution)))
         blocked = _dilate(obstacle, infl)
         free = (grid == FREE) & ~blocked
 
@@ -902,6 +930,7 @@ class CoveragePlanner(Node):
 
     def _bump_left_cb(self, msg: Contacts) -> None:
         if msg.contacts:
+            self.bumper_touched = True
             now = self.get_clock().now()
             if self._bump_left_t is None \
                     or self._elapsed(self._bump_left_t) >= self.bumper_fresh_sec:
@@ -910,6 +939,7 @@ class CoveragePlanner(Node):
 
     def _bump_right_cb(self, msg: Contacts) -> None:
         if msg.contacts:
+            self.bumper_touched = True
             now = self.get_clock().now()
             if self._bump_right_t is None \
                     or self._elapsed(self._bump_right_t) >= self.bumper_fresh_sec:
@@ -1125,6 +1155,35 @@ class CoveragePlanner(Node):
 
     def _tick_reactive(self) -> None:
         """Reactive executor: drive passes on /cmd_vel, transits via Nav2."""
+        now = self.get_clock().now()
+
+        # 1. Gentle wall rebound handling after bumper contact
+        if self.wall_rebound_until is not None:
+            if now < self.wall_rebound_until:
+                tw = Twist()
+                tw.linear.x = -0.06
+                self.cmd_pub.publish(tw)
+                return
+            else:
+                self.wall_rebound_until = None
+                self.cmd_pub.publish(Twist())
+
+        # 2. Bumper contact: wall reached!
+        if self.bumper_touched:
+            self.bumper_touched = False
+            self.get_logger().info(
+                f'Wall contact detected via bumper near waypoint {self.wp_index}. Rebounding and advancing to next pass.')
+            self.wp_index += 1
+            self.wp_retries = 0
+            self.consecutive_skips = 0
+            self._drive_best_dist = None
+            self._drive_best_herr = None
+            self.wall_rebound_until = now + rclpy.duration.Duration(seconds=0.5)
+            tw = Twist()
+            tw.linear.x = -0.06
+            self.cmd_pub.publish(tw)
+            return
+
         # a transit (Nav2) goal may be in flight — let Nav2 finish or skip it
         if self.awaiting:
             if self.goal_deadline is not None:
@@ -1158,7 +1217,6 @@ class CoveragePlanner(Node):
         herr = _wrap(heading - ryaw)
 
         # no-progress skip for the reactive drive: track heading convergence or distance convergence
-        now = self.get_clock().now()
         if abs(herr) >= self.align_tol:
             if self._drive_best_herr is None or abs(herr) < self._drive_best_herr - 0.05:
                 self._drive_best_herr = abs(herr)
@@ -1183,6 +1241,10 @@ class CoveragePlanner(Node):
         tw.angular.z = az
         if abs(herr) < self.align_tol:
             v = self.v_cruise
+            # Slow down dramatically when approaching a wall directly ahead
+            if self.front_wall_dist < 0.50:
+                factor = max(0.16, min(1.0, (self.front_wall_dist - 0.16) / 0.34))
+                v = max(0.04, self.v_cruise * factor)
             # ease down into a coming in-place turn so a high cruise speed can't
             # overshoot the corner: taper over the last 0.4 m before the target
             # when the next segment turns away by more than align_tol.
@@ -1191,7 +1253,7 @@ class CoveragePlanner(Node):
                 n = self.cached_poses[nxt].pose.position
                 turn = abs(_wrap(float(np.arctan2(n.y - ty, n.x - tx)) - heading))
                 if turn > self.align_tol:
-                    v = max(0.08, min(v, self.v_cruise * dist / 0.4))
+                    v = max(0.04, min(v, self.v_cruise * dist / 0.4))
             tw.linear.x = v
         self.cmd_pub.publish(tw)
 
