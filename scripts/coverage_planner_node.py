@@ -1203,11 +1203,12 @@ class CoveragePlanner(Node):
                 self.wall_rebound_until = None
                 self.cmd_pub.publish(Twist())
 
-        # 2. Bumper contact: wall reached!
-        if self.bumper_touched:
+        # 2. Wall contact: wall reached via bumper contact or front LiDAR proximity <= 0.19m
+        at_wall = self.bumper_touched or (self.front_wall_dist <= 0.19)
+        if at_wall:
             self.bumper_touched = False
             self.get_logger().info(
-                f'Wall contact detected via bumper near waypoint {self.wp_index}. Rebounding and advancing to next pass.')
+                f'Wall reached (dist: {self.front_wall_dist:.2f}m) near waypoint {self.wp_index}. Rebounding and advancing to next pass.')
 
             # Advance wp_index to the first waypoint belonging to the NEXT row
             if self.cached_poses is not None and self.wp_index < len(self.cached_poses):
