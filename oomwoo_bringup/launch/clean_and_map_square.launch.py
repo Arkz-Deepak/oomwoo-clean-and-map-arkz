@@ -20,6 +20,7 @@ from launch_ros.actions import Node
 
 
 def generate_launch_description():
+    pkg_bringup = get_package_share_directory('oomwoo_bringup')
     pkg_sim_support = get_package_share_directory('oomwoo_sim_support')
     pkg_gazebo = get_package_share_directory('oomwoo_gazebo')
     pkg_slam = get_package_share_directory('slam_toolbox')
@@ -69,7 +70,7 @@ def generate_launch_description():
         executable='robot_state_publisher',
         parameters=[{
             'robot_description': Command(
-                ['xacro ', os.path.join(pkg_gazebo, 'urdf', 'robot.urdf.xacro')]
+                ['xacro ', os.path.join(pkg_bringup, 'urdf', 'robot.urdf.xacro')]
             )
         }],
     )

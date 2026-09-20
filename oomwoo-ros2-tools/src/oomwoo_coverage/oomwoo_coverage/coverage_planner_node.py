@@ -171,6 +171,7 @@ class CoveragePlanner(Node):
         self.min_transit_len = self.get_parameter('min_transit_len').value
         self.robot_yaw = 0.0            # latest heading (map frame)
         self._drive_best_dist = None   # reactive-drive no-progress tracking
+        self._drive_best_herr = None
         self._drive_progress_t = None
         self.tf_buffer = Buffer()
         self.tf_listener = TransformListener(self.tf_buffer, self)
@@ -1020,25 +1021,32 @@ class CoveragePlanner(Node):
             self.wp_retries = 0
             self.consecutive_skips = 0
             self._drive_best_dist = None
+            self._drive_best_herr = None
             return
         # steer toward the point: rotate in place if badly misaligned, else cruise
         heading = float(np.arctan2(dy, dx))
         herr = _wrap(heading - ryaw)
 
-        # no-progress skip for the reactive drive: heading alignment counts as active progress
+        # no-progress skip for the reactive drive: track heading convergence or distance convergence
         now = self.get_clock().now()
         if abs(herr) >= self.align_tol:
-            self._drive_progress_t = now
-        elif self._drive_best_dist is None or dist < self._drive_best_dist - 0.05:
-            self._drive_best_dist = dist
-            self._drive_progress_t = now
-        elif self._drive_progress_t is not None \
+            if self._drive_best_herr is None or abs(herr) < self._drive_best_herr - 0.05:
+                self._drive_best_herr = abs(herr)
+                self._drive_progress_t = now
+        else:
+            self._drive_best_herr = None
+            if self._drive_best_dist is None or dist < self._drive_best_dist - 0.05:
+                self._drive_best_dist = dist
+                self._drive_progress_t = now
+
+        if self._drive_progress_t is not None \
                 and self._elapsed(self._drive_progress_t) >= self.no_progress_sec:
             self.get_logger().warn(
                 f'waypoint {self.wp_index} stuck (reactive); skipping')
             self.wp_index += 1
             self.consecutive_skips += 1
             self._drive_best_dist = None
+            self._drive_best_herr = None
             return
         az = max(-self.rotate_speed, min(self.rotate_speed, self.k_heading * herr))
         tw = Twist()

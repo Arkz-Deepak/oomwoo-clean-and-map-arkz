@@ -23,7 +23,7 @@ if(BUILD_TESTING)
 endif()
 
 install(
-  DIRECTORY launch
+  DIRECTORY launch urdf
   DESTINATION share/${PROJECT_NAME}
 )
 
