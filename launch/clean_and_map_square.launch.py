@@ -34,7 +34,7 @@ def generate_launch_description():
 
     # 1. Gazebo Sim Server (Headless or GUI)
     gz_server_headless = ExecuteProcess(
-        cmd=['gz', 'sim', '-s', '-r', world],
+        cmd=['gz', 'sim', '-s', '-r', '--headless-rendering', world],
         output='screen',
         condition=IfCondition(headless),
     )
@@ -77,21 +77,28 @@ def generate_launch_description():
 
     # 4. Spawn Robot Entity in Gazebo
     spawn_entity = TimerAction(
-        period=2.0,
+        period=3.0,
         actions=[
             Node(
                 package='ros_gz_sim',
                 executable='create',
-                arguments=['-name', 'oomwoo', '-topic', 'robot_description'],
+                arguments=[
+                    '-world', 'default',
+                    '-name', 'oomwoo',
+                    '-string', Command(['xacro ', os.path.join(pkg_dir, 'urdf', 'robot.urdf.xacro')]),
+                    '-z', '0.05',
+                ],
                 output='screen',
             )
         ],
     )
 
     # 5. RViz2 (Conditional)
+    rviz_config = os.path.join(pkg_dir, 'config', 'clean_and_map.rviz')
     rviz_node = Node(
         package='rviz2',
         executable='rviz2',
+        arguments=['-d', rviz_config],
         condition=IfCondition(rviz),
     )
 

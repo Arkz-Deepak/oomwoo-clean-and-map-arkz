@@ -42,9 +42,11 @@ sim pass certifies the sweep + the harness loop, not a standalone estimator.
 
 from typing import List, Optional
 
-from geometry_msgs.msg import PoseStamped, PoseWithCovarianceStamped, Twist
+from geometry_msgs.msg import Point, PoseStamped, PoseWithCovarianceStamped, Twist
 
 from nav2_msgs.action import NavigateToPose
+
+from visualization_msgs.msg import Marker
 
 from nav_msgs.msg import OccupancyGrid, Path
 
@@ -265,6 +267,19 @@ class CoveragePlanner(Node):
         self.trail_pub = self.create_publisher(Path, '/cleaning_coverage', 10)
         self.trail_path = Path()
         self.trail_path.header.frame_id = 'map'
+        self.trail_marker_pub = self.create_publisher(Marker, '/cleaning_coverage_marker', 10)
+        self.trail_marker = Marker()
+        self.trail_marker.header.frame_id = 'map'
+        self.trail_marker.ns = 'cleaning_coverage'
+        self.trail_marker.id = 0
+        self.trail_marker.type = Marker.LINE_STRIP
+        self.trail_marker.action = Marker.ADD
+        self.trail_marker.scale.x = 0.08  # 8cm wide visible trail
+        self.trail_marker.color.r = 0.0
+        self.trail_marker.color.g = 1.0   # Bright Green
+        self.trail_marker.color.b = 0.0
+        self.trail_marker.color.a = 0.95
+        self.trail_marker.points = []
         # which bumper is pressed decides which way to peel off (_escape_angular)
         self.create_subscription(Contacts, 'bumper_left/contact', self._bump_left_cb, 10)
         self.create_subscription(Contacts, 'bumper_right/contact', self._bump_right_cb, 10)
@@ -559,14 +574,51 @@ class CoveragePlanner(Node):
         return poses
 
     def _publish_plan(self) -> None:
-        """Publish the current waypoint plan as a latched Path for RViz."""
-        if self.cached_poses is None:
+        """Publish the current waypoint plan and green cleaning trail for RViz."""
+        if self.cached_poses is not None:
+            path = Path()
+            path.header.frame_id = self.global_frame
+            path.header.stamp = self.get_clock().now().to_msg()
+            path.poses = list(self.cached_poses)
+            self.plan_pub.publish(path)
+        if self.trail_marker.points:
+            self.trail_marker.header.stamp = self.get_clock().now().to_msg()
+            self.trail_marker_pub.publish(self.trail_marker)
+        if self.trail_path.poses:
+            self.trail_path.header.stamp = self.get_clock().now().to_msg()
+            self.trail_pub.publish(self.trail_path)
+
+    def _update_trail(self) -> None:
+        """Record and publish green cleaning trail behind robot when clean mode is active."""
+        if not (self.plan_started and not self.finished):
             return
-        path = Path()
-        path.header.frame_id = self.global_frame
-        path.header.stamp = self.get_clock().now().to_msg()
-        path.poses = list(self.cached_poses)
-        self.plan_pub.publish(path)
+        pose = self._robot_pose()
+        if pose is None:
+            return
+        now = self.get_clock().now()
+        # Only record a new trail point if moved at least 0.04m from last point
+        add_pt = False
+        if not self.trail_marker.points:
+            add_pt = True
+        else:
+            last_p = self.trail_marker.points[-1]
+            if (pose[0] - last_p.x)**2 + (pose[1] - last_p.y)**2 >= 0.04**2:
+                add_pt = True
+        if add_pt:
+            pt = Point(x=float(pose[0]), y=float(pose[1]), z=0.015)
+            self.trail_marker.points.append(pt)
+            self.trail_marker.header.stamp = now.to_msg()
+            self.trail_marker_pub.publish(self.trail_marker)
+
+            ps = PoseStamped()
+            ps.header.frame_id = 'map'
+            ps.header.stamp = now.to_msg()
+            ps.pose.position.x = float(pose[0])
+            ps.pose.position.y = float(pose[1])
+            ps.pose.position.z = 0.015
+            self.trail_path.poses.append(ps)
+            self.trail_path.header.stamp = now.to_msg()
+            self.trail_pub.publish(self.trail_path)
 
     # ----------------------------------------------------------- execution
     # Waypoints are executed ONE AT A TIME via NavigateToPose, not as a single
@@ -847,6 +899,9 @@ class CoveragePlanner(Node):
                 self._start_plan()
             return
 
+        # Always update green cleaning trail during clean mode
+        self._update_trail()
+
         # wedge escape in progress: reverse open-loop, then hand back to Nav2
         if self.escape_until is not None:
             tw = Twist()
@@ -993,16 +1048,6 @@ class CoveragePlanner(Node):
         if self._maybe_wedge_escape():
             return
         pose = self._robot_pose()
-        if pose is not None:
-            ps = PoseStamped()
-            ps.header.frame_id = 'map'
-            ps.header.stamp = self.get_clock().now().to_msg()
-            ps.pose.position.x = float(pose[0])
-            ps.pose.position.y = float(pose[1])
-            ps.pose.position.z = 0.05
-            self.trail_path.poses.append(ps)
-            self.trail_path.header.stamp = ps.header.stamp
-            self.trail_pub.publish(self.trail_path)
         if pose is None:
             return
         if not self._advance_to_target():

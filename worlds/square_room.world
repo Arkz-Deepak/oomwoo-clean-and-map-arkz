@@ -49,6 +49,13 @@
       <direction>-0.5 0.1 -0.9</direction>
     </light>
 
+    <gui fullscreen="0">
+      <camera name="user_camera">
+        <pose>0.0 -4.5 4.5 0.0 0.75 1.5708</pose>
+        <view_controller>orbit</view_controller>
+      </camera>
+    </gui>
+
     <model name="ground_plane">
       <static>true</static>
       <link name="link">
@@ -57,6 +64,11 @@
         </collision>
         <visual name="visual">
           <geometry><plane><normal>0 0 1</normal><size>20 20</size></plane></geometry>
+          <material>
+            <ambient>0.85 0.85 0.85 1</ambient>
+            <diffuse>0.85 0.85 0.85 1</diffuse>
+            <specular>0.2 0.2 0.2 1</specular>
+          </material>
         </visual>
       </link>
     </model>
