@@ -184,9 +184,9 @@ class CoveragePlanner(Node):
         self.max_retries = self.get_parameter('max_retries').value
         self.awaiting = False
         self.wp_retries = 0
-        self.next_send = None
+        self.first_map_time = None
         self.gapfill_passes = 0
-        self.declare_parameter('max_gapfill', 3)
+        self.declare_parameter('max_gapfill', 10)
         self.max_gapfill = self.get_parameter('max_gapfill').value
         # Wedge escape: when Nav2 gives up on several waypoints in a row the
         # robot is usually stuck in a pocket the inflated costmap paints lethal
@@ -349,8 +349,9 @@ class CoveragePlanner(Node):
             self.ratio_pub.publish(Float32(data=self.ext_ratio))
 
         if first_map:
+            self.first_map_time = self.get_clock().now()
             self.get_logger().info(
-                f'SLAM map received: {w}x{h} @ {res:.3f} m, {self.total_free_cells} reachable free cells')
+                f'SLAM map received: {w}x{h} @ {res:.3f} m, {self.total_free_cells} reachable free cells. Stabilizing...')
         elif self.plan_started and not self.finished and self.wp_index >= len(self.cached_poses):
             if self.total_free_cells > prev_free + 50:
                 self.get_logger().info(
@@ -753,6 +754,9 @@ class CoveragePlanner(Node):
     # timeout prevents Nav2 from grinding on a hard pose.
     def _start_plan(self) -> None:
         self.last_attempt = self.get_clock().now()
+        # Allow SLAM 3.5 seconds to discover walls and stabilize the room map
+        if self.first_map_time is None or self._elapsed(self.first_map_time) < 3.5:
+            return
         pose = self._robot_pose()
         if pose is not None:
             self.robot_xy = (pose[0], pose[1])
@@ -801,24 +805,38 @@ class CoveragePlanner(Node):
         # direction can't reach; a targeted gap-fill pass visits the remaining
         # uncovered clusters directly. Run-to-completion gap-fills until the
         # passes are spent or nothing uncovered remains.
-        if self.gapfill_passes < self.max_gapfill and \
-                (not self.stop_at_target
-                 or self.ext_ratio < self.coverage_target):
-            gaps = self._gapfill_waypoints()
-            if gaps:
-                self.gapfill_passes += 1
-                self.cached_poses = gaps
+        # If coverage target not reached, check for uncleaned sweepable space or gap-fill
+        if not self.stop_at_target or self.ext_ratio < self.coverage_target:
+            # 1. First check if uncovered space can be swept with full passes (e.g. SLAM expanded during run)
+            new_poses = self._plan_waypoints()
+            active_poses = [p for p in new_poses if not self._covered_at(p)]
+            if len(active_poses) > 5:
+                self.cached_poses = active_poses
                 self.wp_index = 0
                 self._publish_plan()
                 self.get_logger().info(
-                    f'gap-fill pass {self.gapfill_passes}: '
-                    f'{len(gaps)} uncovered spots, coverage '
-                    f'{self.ext_ratio:.1%}')
-                return False
+                    f'Sweeping newly expanded/uncovered area: {len(active_poses)} waypoints (coverage {self.ext_ratio:.1%})')
+                return True
+
+            # 2. Targeted gap-fill pass for isolated clusters
+            if self.gapfill_passes < self.max_gapfill:
+                gaps = self._gapfill_waypoints()
+                if gaps:
+                    self.gapfill_passes += 1
+                    self.cached_poses = gaps
+                    self.wp_index = 0
+                    self._publish_plan()
+                    self.get_logger().info(
+                        f'gap-fill pass {self.gapfill_passes}: '
+                        f'{len(gaps)} uncovered spots, coverage '
+                        f'{self.ext_ratio:.1%}')
+                    return False
+
         self.get_logger().info(
             f'coverage complete: {self.ext_ratio:.1%} covered')
         self.finished = True
         self.active_pub.publish(Bool(data=False))
+        self.cmd_pub.publish(Twist())
         return False
 
     def _send_goal_to(self, p) -> None:
@@ -1022,6 +1040,7 @@ class CoveragePlanner(Node):
                 self.cancel_on_accept = True
             return
         if self.finished:
+            self.cmd_pub.publish(Twist())
             return
 
         if not self.plan_started:
