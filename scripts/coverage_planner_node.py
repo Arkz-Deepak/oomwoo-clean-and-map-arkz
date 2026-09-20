@@ -274,12 +274,14 @@ class CoveragePlanner(Node):
         self.trail_marker.id = 0
         self.trail_marker.type = Marker.LINE_STRIP
         self.trail_marker.action = Marker.ADD
-        self.trail_marker.scale.x = 0.08  # 8cm wide visible trail
+        self.trail_marker.scale.x = 2.0 * self.robot_radius  # Trail radius matches robot radius (width = 2 * r)
         self.trail_marker.color.r = 0.0
         self.trail_marker.color.g = 1.0   # Bright Green
         self.trail_marker.color.b = 0.0
         self.trail_marker.color.a = 0.95
         self.trail_marker.points = []
+        self.ratio_pub = self.create_publisher(Float32, 'coverage_ratio', 10)
+        self.covered_pub = self.create_publisher(OccupancyGrid, 'covered_grid', latched_qos())
         # which bumper is pressed decides which way to peel off (_escape_angular)
         self.create_subscription(Contacts, 'bumper_left/contact', self._bump_left_cb, 10)
         self.create_subscription(Contacts, 'bumper_right/contact', self._bump_right_cb, 10)
@@ -292,13 +294,89 @@ class CoveragePlanner(Node):
 
     # ---------------------------------------------------------------- maps
     def _on_map(self, msg: OccupancyGrid) -> None:
-        if self.map_msg is not None:
-            return
+        first_map = (self.map_msg is None)
+        prev_free = self.total_free_cells
         self.map_msg = msg
         self._build_masks()
-        self.get_logger().info(
-            f'map {msg.info.width}x{msg.info.height} @ {msg.info.resolution:.3f} m, '
-            f'{self.total_free_cells} reachable free cells')
+
+        # Update covered_grid shape/origin to match current SLAM map
+        info = msg.info
+        h, w = info.height, info.width
+        res = info.resolution
+        ox, oy = info.origin.position.x, info.origin.position.y
+
+        # Initialize or re-project covered_grid if map dimensions/origin changed
+        if self.covered_grid is None or self.covered_grid.shape != (h, w):
+            self.covered_grid = np.zeros((h, w), dtype=np.int8)
+            # Re-stamp recorded trail points
+            r = max(1, int(round(self.cleaning_radius / res)))
+            for pt in self.trail_marker.points:
+                cx = int((pt.x - ox) / res)
+                cy = int((pt.y - oy) / res)
+                y0, y1 = max(0, cy - r), min(h, cy + r + 1)
+                x0, x1 = max(0, cx - r), min(w, cx + r + 1)
+                if y0 < y1 and x0 < x1:
+                    ys, xs = np.ogrid[y0 - cy:y1 - cy, x0 - cx:x1 - cx]
+                    disk = (xs * res)**2 + (ys * res)**2 <= (self.cleaning_radius ** 2)
+                    self.covered_grid[y0:y1, x0:x1][disk] = 100
+
+        # Update coverage ratio
+        if self.total_free_cells > 0 and self.free_mask is not None:
+            cleaned = int(np.sum((self.covered_grid >= 100) & self.free_mask))
+            self.ext_ratio = float(cleaned / self.total_free_cells)
+            self.ratio_pub.publish(Float32(data=self.ext_ratio))
+
+        if first_map:
+            self.get_logger().info(
+                f'SLAM map received: {w}x{h} @ {res:.3f} m, {self.total_free_cells} reachable free cells')
+        elif self.plan_started and not self.finished and self.total_free_cells > prev_free + 150:
+            self.get_logger().info(
+                f'SLAM map expanded: {self.total_free_cells} free cells (+{self.total_free_cells - prev_free}). Replanning to cover newly mapped space.')
+            self._replan_expanded()
+
+    def _replan_expanded(self) -> None:
+        """Replan coverage over newly expanded SLAM map while preserving progress."""
+        if not self.plan_started or self.finished:
+            return
+        new_poses = self._plan_waypoints()
+        if not new_poses:
+            return
+        # Filter out waypoints that are already covered
+        active_poses = [p for p in new_poses if not self._covered_at(p)]
+        if active_poses:
+            self.cached_poses = active_poses
+            self.wp_index = 0
+            self._publish_plan()
+            self.get_logger().info(
+                f'Dynamic replan: {len(active_poses)} uncleaned waypoints scheduled on updated SLAM map')
+
+    def _update_coverage(self, pose) -> None:
+        """Mark cells within cleaning_radius of robot pose as covered."""
+        if self.map_msg is None or self.covered_grid is None:
+            return
+        info = self.map_msg.info
+        res = info.resolution
+        ox, oy = info.origin.position.x, info.origin.position.y
+        h, w = self.covered_grid.shape
+
+        rx, ry = pose[0], pose[1]
+        cx = int((rx - ox) / res)
+        cy = int((ry - oy) / res)
+        r = max(1, int(round(self.cleaning_radius / res)))
+
+        y0, y1 = max(0, cy - r), min(h, cy + r + 1)
+        x0, x1 = max(0, cx - r), min(w, cx + r + 1)
+        if y0 < y1 and x0 < x1:
+            ys, xs = np.ogrid[y0 - cy:y1 - cy, x0 - cx:x1 - cx]
+            dist_sq = (xs * res)**2 + (ys * res)**2
+            disk = dist_sq <= (self.cleaning_radius ** 2)
+            self.covered_grid[y0:y1, x0:x1][disk] = 100
+
+        # Update coverage ratio
+        if self.total_free_cells > 0 and self.free_mask is not None:
+            cleaned = int(np.sum((self.covered_grid >= 100) & self.free_mask))
+            self.ext_ratio = float(cleaned / self.total_free_cells)
+            self.ratio_pub.publish(Float32(data=self.ext_ratio))
 
     def _on_keepout(self, msg: OccupancyGrid) -> None:
         # keepout filter mask uses the same grid geometry; occupied => no-go
@@ -314,10 +392,9 @@ class CoveragePlanner(Node):
         grid = np.asarray(self.map_msg.data, dtype=np.int16).reshape(h, w)
 
         obstacle = grid >= OCC_THRESH
-        unknown = grid == UNKNOWN
-        # inflate obstacles + unknown by robot radius so the center path is safe
+        # Inflate obstacles (walls) by robot radius so the center path is safe
         infl = max(1, int(round(self.robot_radius / info.resolution)))
-        blocked = _dilate(obstacle | unknown, infl)
+        blocked = _dilate(obstacle, infl)
         free = (grid == FREE) & ~blocked
 
         if self.keepout is not None and self.keepout.shape == free.shape:
@@ -620,6 +697,9 @@ class CoveragePlanner(Node):
             self.trail_path.header.stamp = now.to_msg()
             self.trail_pub.publish(self.trail_path)
 
+        # Update internal coverage grid at current pose
+        self._update_coverage(pose)
+
     # ----------------------------------------------------------- execution
     # Waypoints are executed ONE AT A TIME via NavigateToPose, not as a single
     # NavigateThroughPoses goal. A NavigateThroughPoses goal aborts the *whole*
@@ -744,7 +824,12 @@ class CoveragePlanner(Node):
         if ys.size == 0:
             return []
         pts = [(ox_i, oy_i) for ox_i, oy_i in zip(xs.tolist(), ys.tolist())]
-        # nearest-neighbour order from the robot's current cell
+        pose = self._robot_pose()
+        if pose is not None:
+            self.robot_xy = (pose[0], pose[1])
+            self.robot_yaw = pose[2]
+        if self.robot_xy is None:
+            return []
         rcx = int((self.robot_xy[0] - info.origin.position.x) / res)
         rcy = int((self.robot_xy[1] - info.origin.position.y) / res)
         order, cur = [], (rcx, rcy)
