@@ -1,0 +1,30 @@
+==================================================
+      OOMWOO SLAM MAP GENERATION & ANALYSIS REPORT
+==================================================
+Output Files:
+  - PGM Image: /home/deepak-r/Projects/oomwoo-clean-and-map-arkz/maps/square_room_map.pgm
+  - YAML Config: /home/deepak-r/Projects/oomwoo-clean-and-map-arkz/maps/square_room_map.yaml
+
+Grid Specifications:
+  - Resolution: 0.0500 m/cell
+  - Grid Size: 111 x 121 cells
+  - Total Map Extent: 5.55 m x 6.05 m
+  - Origin: (-3.034, -3.028)
+
+Occupancy Breakdown:
+  - Free Cells (Floor): 1,490 (11.1%)
+  - Occupied Cells (Walls): 11 (0.1%)
+  - Unknown Cells: 11,930 (88.8%)
+
+Geometric Reconstruction:
+  - Mapped Free Area: 3.73 m^2 (Target: 36.00 m^2)
+  - Estimated Room Width (X): 5.45 m (Expected: 6.00 m)
+  - Estimated Room Length (Y): 5.95 m (Expected: 6.00 m)
+  - Wall X Bounds: [-2.98 m, 2.47 m]
+  - Wall Y Bounds: [-2.98 m, 2.97 m]
+  - Interior Free Bounds: X in [-1.63, 2.47], Y in [-1.58, 1.57]
+
+Quality Assessment:
+  - Coverage Completeness: 10.3% of 6x6m floor area mapped
+  - Aspect Ratio: 0.92 (Expected: 1.00 for square room)
+==================================================

@@ -7,7 +7,7 @@ import launch
 import launch_testing
 import launch_testing.actions
 from ament_index_python.packages import get_package_share_directory
-from launch.actions import IncludeLaunchDescription, DeclareLaunchArgument
+from launch.actions import IncludeLaunchDescription, DeclareLaunchArgument, SetEnvironmentVariable
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
 
@@ -24,7 +24,7 @@ def generate_test_description():
         PythonLaunchDescriptionSource(
             os.path.join(get_package_share_directory('oomwoo_gazebo'), 'launch', 'sim.launch.py')
         ),
-        launch_arguments={'use_sim_time': use_sim_time, 'world': world, 'headless': 'true'}.items()
+        launch_arguments={'use_sim_time': use_sim_time, 'world': world, 'rviz': 'false'}.items()
     )
 
     slam_launch = IncludeLaunchDescription(
@@ -35,6 +35,10 @@ def generate_test_description():
     )
 
     return launch.LaunchDescription([
+        SetEnvironmentVariable('GZ_IP', '127.0.0.1'),
+        SetEnvironmentVariable('__EGL_VENDOR_LIBRARY_FILENAMES', '/usr/share/glvnd/egl_vendor.d/50_mesa.json'),
+        SetEnvironmentVariable('__GLX_VENDOR_LIBRARY_NAME', 'mesa'),
+        SetEnvironmentVariable('LIBGL_ALWAYS_SOFTWARE', '1'),
         DeclareLaunchArgument('use_sim_time', default_value='true'),
         DeclareLaunchArgument('world', default_value=default_world_path),
         gazebo_launch,

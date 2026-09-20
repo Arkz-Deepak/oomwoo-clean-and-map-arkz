@@ -1021,9 +1021,15 @@ class CoveragePlanner(Node):
             self.consecutive_skips = 0
             self._drive_best_dist = None
             return
-        # no-progress skip for the reactive drive (same idea as the goal watchdog)
+        # steer toward the point: rotate in place if badly misaligned, else cruise
+        heading = float(np.arctan2(dy, dx))
+        herr = _wrap(heading - ryaw)
+
+        # no-progress skip for the reactive drive: heading alignment counts as active progress
         now = self.get_clock().now()
-        if self._drive_best_dist is None or dist < self._drive_best_dist - 0.05:
+        if abs(herr) >= self.align_tol:
+            self._drive_progress_t = now
+        elif self._drive_best_dist is None or dist < self._drive_best_dist - 0.05:
             self._drive_best_dist = dist
             self._drive_progress_t = now
         elif self._drive_progress_t is not None \
@@ -1034,9 +1040,6 @@ class CoveragePlanner(Node):
             self.consecutive_skips += 1
             self._drive_best_dist = None
             return
-        # steer toward the point: rotate in place if badly misaligned, else cruise
-        heading = float(np.arctan2(dy, dx))
-        herr = _wrap(heading - ryaw)
         az = max(-self.rotate_speed, min(self.rotate_speed, self.k_heading * herr))
         tw = Twist()
         tw.angular.z = az
