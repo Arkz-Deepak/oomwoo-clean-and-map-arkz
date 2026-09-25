@@ -127,8 +127,12 @@ class CoveragePlanner(Node):
         self.global_frame = self.get_parameter('global_frame').value
         self.base_frame = self.get_parameter('robot_base_frame').value
         self.declare_parameter('obstacle_inflation', 0.10)
+        self.declare_parameter('bridge_dist', 0.55)       # m, close narrow gaps between furniture legs
         self.obstacle_inflation = self.get_parameter('obstacle_inflation').value
+        self.bridge_dist = self.get_parameter('bridge_dist').value
         self.min_segment_len = self.get_parameter('min_segment_len').value
+        self._stall_check_t = None
+        self._stall_check_pose = None
 
         # --- state --------------------------------------------------------
         self.map_msg: Optional[OccupancyGrid] = None
@@ -302,17 +306,25 @@ class CoveragePlanner(Node):
         self.get_logger().info('coverage_planner up; waiting for /map')
 
     def _on_scan(self, msg: LaserScan) -> None:
-        """Extract distance to obstacle/wall directly ahead of robot (+/-15 deg)."""
+        """Extract forward distance to any obstacle in the robot's physical driving corridor (|y| <= 0.18m)."""
         ranges = np.asarray(msg.ranges)
         if ranges.size == 0:
             return
         n = len(ranges)
-        deg15 = max(1, int(round(15.0 / 360.0 * n)))
-        fwd_idx = np.concatenate([np.arange(0, deg15 + 1), np.arange(n - deg15, n)])
-        valid = ranges[fwd_idx]
-        valid = valid[(valid >= 0.12) & np.isfinite(valid)]
-        if valid.size > 0:
-            self.front_wall_dist = float(np.min(valid))
+        angles = msg.angle_min + np.arange(n) * msg.angle_increment
+        valid_mask = np.isfinite(ranges) & (ranges >= 0.12) & (ranges <= 3.0)
+        if not np.any(valid_mask):
+            self.front_wall_dist = 2.0
+            return
+        r = ranges[valid_mask]
+        a = angles[valid_mask]
+        # x is forward, y is lateral (left/right). Robot radius is 0.165m.
+        # Check physical driving envelope: lateral width |y| <= 0.18m, forward distance 0.12 <= x <= 0.80m
+        xs = r * np.cos(a)
+        ys = r * np.sin(a)
+        in_corridor = (xs >= 0.12) & (xs <= 0.80) & (np.abs(ys) <= 0.18)
+        if np.any(in_corridor):
+            self.front_wall_dist = float(np.min(xs[in_corridor]))
         else:
             self.front_wall_dist = 2.0
 
@@ -425,8 +437,9 @@ class CoveragePlanner(Node):
 
         obstacle = grid >= OCC_THRESH
 
-        # Bridge narrow gaps between furniture legs (< 0.42 m) so robot never attempts to squeeze between chair legs
-        bridge_cells = max(1, int(round(0.42 / info.resolution)))
+        # Bridge narrow gaps between furniture legs (< bridge_dist, default 0.55m) so robot never attempts to squeeze between chair legs
+        bridge_dist = getattr(self, 'bridge_dist', 0.55)
+        bridge_cells = max(1, int(round(bridge_dist / info.resolution)))
         obstacle_closed = ndi.binary_closing(obstacle, structure=np.ones((bridge_cells, bridge_cells)))
 
         # Inflate obstacles (walls, closed furniture blocks, ball) by obstacle_inflation
@@ -1220,10 +1233,10 @@ class CoveragePlanner(Node):
         heading = float(np.arctan2(dy, dx))
         herr = _wrap(heading - ryaw)
 
-        # 2. Wall contact: wall reached via bumper contact or front LiDAR proximity <= 0.19m
+        # 2. Wall contact: wall reached via bumper contact or front LiDAR proximity <= 0.20m
         # Require robot not in cooldown; for front LiDAR, also require facing the obstacle (abs(herr) < align_tol)
         in_cooldown = (self.wall_cooldown_until is not None and now < self.wall_cooldown_until)
-        at_wall = not in_cooldown and (self.bumper_touched or (self.front_wall_dist <= 0.19 and abs(herr) < self.align_tol))
+        at_wall = not in_cooldown and (self.bumper_touched or (self.front_wall_dist <= 0.20 and abs(herr) < self.align_tol))
 
         if at_wall:
             self.bumper_touched = False
@@ -1312,6 +1325,52 @@ class CoveragePlanner(Node):
                 if turn > self.align_tol:
                     v = max(0.08, min(v, self.v_cruise * dist / 0.4))
             tw.linear.x = v
+
+        # Anti-wheel-slip physical stall detection:
+        # If commanding forward velocity (v >= 0.08 m/s), verify physical displacement in map frame.
+        # If robot moved less than 2.5 cm in 1.0s while driving forward, it is physically blocked by an obstacle/leg!
+        # Halt motors immediately and rebound to protect the SLAM map from wheel slip distortion.
+        if not in_cooldown and abs(herr) < self.align_tol and tw.linear.x >= 0.08:
+            if getattr(self, '_stall_check_t', None) is None:
+                self._stall_check_t = now
+                self._stall_check_pose = (rx, ry)
+            elif self._elapsed(self._stall_check_t) >= 1.0:
+                moved = float(np.hypot(rx - self._stall_check_pose[0], ry - self._stall_check_pose[1]))
+                self._stall_check_t = now
+                self._stall_check_pose = (rx, ry)
+                if moved < 0.025:  # physically blocked!
+                    self.get_logger().warn(
+                        f'Physical block detected near waypoint {self.wp_index} (moved {moved*100:.1f}cm in 1.0s). Rebounding to protect SLAM map.')
+                    self.cmd_pub.publish(Twist())  # zero motors immediately
+                    self.wall_rebound_until = now + rclpy.duration.Duration(seconds=0.8)
+                    tw_rev = Twist()
+                    tw_rev.linear.x = -0.10
+                    self.cmd_pub.publish(tw_rev)
+
+                    # Advance wp_index to the first waypoint belonging to the NEXT row
+                    if self.cached_poses is not None and self.wp_index < len(self.cached_poses):
+                        cur_p = self.cached_poses[self.wp_index].pose.position
+                        next_idx = self.wp_index + 1
+                        while next_idx < len(self.cached_poses):
+                            np_pos = self.cached_poses[next_idx].pose.position
+                            d_row = max(abs(np_pos.y - cur_p.y), abs(np_pos.x - cur_p.x))
+                            if d_row >= 0.18:
+                                break
+                            next_idx += 1
+                        self.wp_index = next_idx
+                    else:
+                        self.wp_index += 1
+
+                    self.wp_retries = 0
+                    self.consecutive_skips = 0
+                    self._drive_best_dist = None
+                    self._drive_best_herr = None
+                    self._drive_progress_t = now
+                    return
+        else:
+            self._stall_check_t = None
+            self._stall_check_pose = None
+
         self.cmd_pub.publish(tw)
 
 
