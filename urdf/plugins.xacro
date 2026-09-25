@@ -60,7 +60,7 @@
   <gazebo reference="bumper_left_link">
     <sensor name="bumper_left_contact" type="contact">
       <contact>
-        <collision>bumper_left_collision</collision>
+        <collision>base_footprint_fixed_joint_lump__bumper_left_collision_collision_1</collision>
         <topic>bumper_left</topic>
       </contact>
     </sensor>
@@ -69,7 +69,7 @@
   <gazebo reference="bumper_right_link">
     <sensor name="bumper_right_contact" type="contact">
       <contact>
-        <collision>bumper_right_collision</collision>
+        <collision>base_footprint_fixed_joint_lump__bumper_right_collision_collision_2</collision>
         <topic>bumper_right</topic>
       </contact>
     </sensor>

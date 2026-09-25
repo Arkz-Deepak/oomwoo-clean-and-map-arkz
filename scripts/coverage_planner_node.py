@@ -289,6 +289,7 @@ class CoveragePlanner(Node):
         self.front_wall_dist = 2.0
         self.bumper_touched = False
         self.wall_rebound_until = None
+        self.wall_cooldown_until = None
         # Connect to bumper contact topics and LiDAR scan
         self.create_subscription(Contacts, '/bumper_left', self._bump_left_cb, 10)
         self.create_subscription(Contacts, '/bumper_right', self._bump_right_cb, 10)
@@ -301,13 +302,13 @@ class CoveragePlanner(Node):
         self.get_logger().info('coverage_planner up; waiting for /map')
 
     def _on_scan(self, msg: LaserScan) -> None:
-        """Extract distance to obstacle/wall directly ahead of robot."""
+        """Extract distance to obstacle/wall directly ahead of robot (+/-15 deg)."""
         ranges = np.asarray(msg.ranges)
         if ranges.size == 0:
             return
         n = len(ranges)
-        deg35 = int(round(35.0 / 360.0 * n))
-        fwd_idx = np.concatenate([np.arange(0, deg35 + 1), np.arange(n - deg35, n)])
+        deg15 = max(1, int(round(15.0 / 360.0 * n)))
+        fwd_idx = np.concatenate([np.arange(0, deg15 + 1), np.arange(n - deg15, n)])
         valid = ranges[fwd_idx]
         valid = valid[(valid >= 0.12) & np.isfinite(valid)]
         if valid.size > 0:
@@ -423,18 +424,18 @@ class CoveragePlanner(Node):
         grid = np.asarray(self.map_msg.data, dtype=np.int16).reshape(h, w)
 
         obstacle = grid >= OCC_THRESH
-        # Inflate obstacles (walls/furniture) by obstacle_inflation (default 0.10 m)
+
+        # Bridge narrow gaps between furniture legs (< 0.42 m) so robot never attempts to squeeze between chair legs
+        bridge_cells = max(1, int(round(0.42 / info.resolution)))
+        obstacle_closed = ndi.binary_closing(obstacle, structure=np.ones((bridge_cells, bridge_cells)))
+
+        # Inflate obstacles (walls, closed furniture blocks, ball) by obstacle_inflation
         infl = max(1, int(round(self.obstacle_inflation / info.resolution)))
-        blocked = _dilate(obstacle, infl)
+        blocked = _dilate(obstacle_closed, infl)
         free = (grid == FREE) & ~blocked
 
         if self.keepout is not None and self.keepout.shape == free.shape:
             free &= ~self.keepout
-
-        # Morphological closing and hole-filling to eliminate SLAM noise & dropouts (< 25 cm)
-        gap_cells = max(1, int(round(0.25 / info.resolution)))
-        free = ndi.binary_closing(free, structure=np.ones((gap_cells, gap_cells)))
-        free = ndi.binary_fill_holes(free)
 
         self.free_mask = free
         self.total_free_cells = int(free.sum())
@@ -528,10 +529,6 @@ class CoveragePlanner(Node):
             self.get_logger().warn('robot not on reachable free space')
             return []
         reachable = _flood_fill(self.free_mask, seed)
-        # Fill holes and close minor gaps on reachable to prevent cell fragmentation
-        gap_cells = max(1, int(round(0.25 / res)))
-        reachable = ndi.binary_fill_holes(reachable)
-        reachable = ndi.binary_closing(reachable, structure=np.ones((gap_cells, gap_cells)))
         # keep for gap-fill: its targets must obey the same reachability
         # invariant as the sweep, or disconnected free islands (e.g. the
         # outside-the-walls region some maps load as free) get re-targeted
@@ -549,13 +546,9 @@ class CoveragePlanner(Node):
         # first, entering each at whichever corner is closest — one transit
         # per cell instead of one round-trip around the furniture per row.
         cells = _decompose_cells(reachable)
-        # Absorb sliver cells: a cell smaller than one swath (`step`) in BOTH
-        # dimensions is a fragment — a neighbour's swath overlap plus the gap-
-        # fill pass already cover its area, so sweeping it as its own cell only
-        # buys an extra transit + turns. Dropping these de-fragments the plan
-        # (the cluttered living_room sheds its ring of furniture-corner slivers).
+        # Keep all valid cells, including small square alcoves/nooks (>= 1 row, >= 2 cells wide)
         cells = [c for c in cells
-                 if len(c) >= 2 and max(b - a + 1 for _, a, b in c) >= step]
+                 if len(c) >= 1 and max(b - a + 1 for _, a, b in c) >= 2]
 
         # intermediate waypoints along each pass keep the robot ON the straight
         # line: with only two endpoints the controller cuts the corner toward the
@@ -881,8 +874,8 @@ class CoveragePlanner(Node):
         ys, xs = np.where(uncovered)
         if ys.size == 0:
             return []
-        # subsample to ~0.3 m so we don't over-visit a cluster
-        keep = ((ys % 6 == 0) & (xs % 6 == 0))
+        # subsample to ~0.2 m so we cover all square portions and nooks
+        keep = ((ys % 4 == 0) & (xs % 4 == 0))
         ys, xs = ys[keep], xs[keep]
         if ys.size == 0:
             return []
@@ -897,7 +890,7 @@ class CoveragePlanner(Node):
         rcy = int((self.robot_xy[1] - info.origin.position.y) / res)
         order, cur = [], (rcx, rcy)
         remaining = pts[:]
-        while remaining and len(order) < 60:
+        while remaining and len(order) < 120:
             j = min(range(len(remaining)),
                     key=lambda k: (remaining[k][0] - cur[0]) ** 2
                     + (remaining[k][1] - cur[1]) ** 2)
@@ -1193,48 +1186,19 @@ class CoveragePlanner(Node):
         """Reactive executor: drive passes on /cmd_vel, transits via Nav2."""
         now = self.get_clock().now()
 
-        # 1. Gentle wall rebound handling after bumper contact
+        # 1. Gentle wall rebound handling after bumper contact / front wall reached
         if self.wall_rebound_until is not None:
+            self.bumper_touched = False  # Ignore residual contacts while actively rebounding in reverse
             if now < self.wall_rebound_until:
                 tw = Twist()
-                tw.linear.x = -0.06
+                tw.linear.x = -0.10
                 self.cmd_pub.publish(tw)
                 return
             else:
                 self.wall_rebound_until = None
+                self.wall_cooldown_until = now + rclpy.duration.Duration(seconds=1.5)
+                self.bumper_touched = False
                 self.cmd_pub.publish(Twist())
-
-        # 2. Wall contact: wall reached via bumper contact or front LiDAR proximity <= 0.19m
-        at_wall = self.bumper_touched or (self.front_wall_dist <= 0.19)
-        if at_wall:
-            self.bumper_touched = False
-            self.get_logger().info(
-                f'Wall reached (dist: {self.front_wall_dist:.2f}m) near waypoint {self.wp_index}. Rebounding and advancing to next pass.')
-
-            # Advance wp_index to the first waypoint belonging to the NEXT row
-            if self.cached_poses is not None and self.wp_index < len(self.cached_poses):
-                cur_p = self.cached_poses[self.wp_index].pose.position
-                next_idx = self.wp_index + 1
-                while next_idx < len(self.cached_poses):
-                    np_pos = self.cached_poses[next_idx].pose.position
-                    # Check distance perpendicular to pass direction (row change >= 0.15m)
-                    d_row = max(abs(np_pos.y - cur_p.y), abs(np_pos.x - cur_p.x))
-                    if d_row >= 0.15:
-                        break
-                    next_idx += 1
-                self.wp_index = next_idx
-            else:
-                self.wp_index += 1
-
-            self.wp_retries = 0
-            self.consecutive_skips = 0
-            self._drive_best_dist = None
-            self._drive_best_herr = None
-            self.wall_rebound_until = now + rclpy.duration.Duration(seconds=0.5)
-            tw = Twist()
-            tw.linear.x = -0.06
-            self.cmd_pub.publish(tw)
-            return
 
         # a transit (Nav2) goal may be in flight — let Nav2 finish or skip it
         if self.awaiting:
@@ -1253,6 +1217,45 @@ class CoveragePlanner(Node):
         rx, ry, ryaw = pose
         dx, dy = tx - rx, ty - ry
         dist = (dx * dx + dy * dy) ** 0.5
+        heading = float(np.arctan2(dy, dx))
+        herr = _wrap(heading - ryaw)
+
+        # 2. Wall contact: wall reached via bumper contact or front LiDAR proximity <= 0.19m
+        # Require robot not in cooldown; for front LiDAR, also require facing the obstacle (abs(herr) < align_tol)
+        in_cooldown = (self.wall_cooldown_until is not None and now < self.wall_cooldown_until)
+        at_wall = not in_cooldown and (self.bumper_touched or (self.front_wall_dist <= 0.19 and abs(herr) < self.align_tol))
+
+        if at_wall:
+            self.bumper_touched = False
+            self.get_logger().info(
+                f'Wall reached (dist: {self.front_wall_dist:.2f}m) near waypoint {self.wp_index}. Rebounding and advancing to next pass.')
+
+            # Advance wp_index to the first waypoint belonging to the NEXT row
+            if self.cached_poses is not None and self.wp_index < len(self.cached_poses):
+                cur_p = self.cached_poses[self.wp_index].pose.position
+                next_idx = self.wp_index + 1
+                while next_idx < len(self.cached_poses):
+                    np_pos = self.cached_poses[next_idx].pose.position
+                    # Check distance perpendicular to pass direction (row change >= 0.18m)
+                    d_row = max(abs(np_pos.y - cur_p.y), abs(np_pos.x - cur_p.x))
+                    if d_row >= 0.18:
+                        break
+                    next_idx += 1
+                self.wp_index = next_idx
+            else:
+                self.wp_index += 1
+
+            self.wp_retries = 0
+            self.consecutive_skips = 0
+            self._drive_best_dist = None
+            self._drive_best_herr = None
+            self._drive_progress_t = now
+            self.wall_rebound_until = now + rclpy.duration.Duration(seconds=0.8)
+            tw = Twist()
+            tw.linear.x = -0.10
+            self.cmd_pub.publish(tw)
+            return
+
         # long inter-cell hop: route via Nav2 IF server is active, else drive reactively
         if dist > self.min_transit_len and self.nav_client.server_is_ready():
             self._send_goal_to(target)
@@ -1263,11 +1266,12 @@ class CoveragePlanner(Node):
             self.consecutive_skips = 0
             self._drive_best_dist = None
             self._drive_best_herr = None
+            self._drive_progress_t = now
+            if self.wp_index % 10 == 0:
+                self.get_logger().info(
+                    f'waypoint {self.wp_index}/{len(self.cached_poses)}, coverage {self.ext_ratio:.1%}')
             return
         # steer toward the point: rotate in place if badly misaligned, else cruise
-        heading = float(np.arctan2(dy, dx))
-        herr = _wrap(heading - ryaw)
-
         # no-progress skip for the reactive drive: track heading convergence or distance convergence
         if abs(herr) >= self.align_tol:
             if self._drive_best_herr is None or abs(herr) < self._drive_best_herr - 0.05:
@@ -1287,16 +1291,17 @@ class CoveragePlanner(Node):
             self.consecutive_skips += 1
             self._drive_best_dist = None
             self._drive_best_herr = None
+            self._drive_progress_t = now
             return
         az = max(-self.rotate_speed, min(self.rotate_speed, self.k_heading * herr))
         tw = Twist()
         tw.angular.z = az
         if abs(herr) < self.align_tol:
             v = self.v_cruise
-            # Slow down dramatically when approaching a wall directly ahead
+            # Slow down smoothly when approaching a wall directly ahead
             if self.front_wall_dist < 0.50:
-                factor = max(0.16, min(1.0, (self.front_wall_dist - 0.16) / 0.34))
-                v = max(0.04, self.v_cruise * factor)
+                factor = max(0.25, min(1.0, (self.front_wall_dist - 0.16) / 0.34))
+                v = max(0.08, self.v_cruise * factor)
             # ease down into a coming in-place turn so a high cruise speed can't
             # overshoot the corner: taper over the last 0.4 m before the target
             # when the next segment turns away by more than align_tol.
@@ -1305,7 +1310,7 @@ class CoveragePlanner(Node):
                 n = self.cached_poses[nxt].pose.position
                 turn = abs(_wrap(float(np.arctan2(n.y - ty, n.x - tx)) - heading))
                 if turn > self.align_tol:
-                    v = max(0.04, min(v, self.v_cruise * dist / 0.4))
+                    v = max(0.08, min(v, self.v_cruise * dist / 0.4))
             tw.linear.x = v
         self.cmd_pub.publish(tw)
 

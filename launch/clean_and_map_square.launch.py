@@ -127,11 +127,14 @@ def generate_launch_description():
         parameters=[{
             'use_sim_time': use_sim_time,
             'executor': 'reactive',
-            'v_cruise': 0.25,
-            'rotate_speed': 0.4,
+            'v_cruise': 0.32,
+            'rotate_speed': 0.9,
             'robot_radius': 0.17,
             'reach_tol': 0.08,
             'align_tol': 0.30,
+            'obstacle_inflation': 0.18,
+            'min_segment_len': 0.15,
+            'no_progress_sec': 3.0,
         }],
         remappings=[
             ('/map', '/map'),
