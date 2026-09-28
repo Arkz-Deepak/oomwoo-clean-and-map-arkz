@@ -145,9 +145,6 @@ def generate_launch_description():
 
     return LaunchDescription([
         SetEnvironmentVariable('GZ_IP', '127.0.0.1'),
-        SetEnvironmentVariable('__EGL_VENDOR_LIBRARY_FILENAMES', '/usr/share/glvnd/egl_vendor.d/50_mesa.json'),
-        SetEnvironmentVariable('__GLX_VENDOR_LIBRARY_NAME', 'mesa'),
-        SetEnvironmentVariable('LIBGL_ALWAYS_SOFTWARE', '1'),
         DeclareLaunchArgument('use_sim_time', default_value='true'),
         DeclareLaunchArgument('world', default_value=default_world),
         DeclareLaunchArgument('headless', default_value='false'),

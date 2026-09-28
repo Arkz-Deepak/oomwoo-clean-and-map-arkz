@@ -126,13 +126,15 @@ class CoveragePlanner(Node):
         self.stop_at_target = self.get_parameter('stop_at_target').value
         self.global_frame = self.get_parameter('global_frame').value
         self.base_frame = self.get_parameter('robot_base_frame').value
-        self.declare_parameter('obstacle_inflation', 0.10)
-        self.declare_parameter('bridge_dist', 0.55)       # m, close narrow gaps between furniture legs
+        self.declare_parameter('obstacle_inflation', 0.25)
+        self.declare_parameter('bridge_dist', 0.75)       # m, close narrow gaps between furniture legs
         self.obstacle_inflation = self.get_parameter('obstacle_inflation').value
         self.bridge_dist = self.get_parameter('bridge_dist').value
         self.min_segment_len = self.get_parameter('min_segment_len').value
         self._stall_check_t = None
         self._stall_check_pose = None
+        self._rot_stall_t = None
+        self._rot_stall_yaw = None
 
         # --- state --------------------------------------------------------
         self.map_msg: Optional[OccupancyGrid] = None
@@ -156,7 +158,7 @@ class CoveragePlanner(Node):
         # than waiting out Nav2's collision-averse recovery ladder (backup/spin/
         # wait can't move in a costmap-lethal wedge) and the full goal timeout.
         # Legitimate long transits keep making progress, so they're untouched.
-        self.declare_parameter('no_progress_sec', 6.0)
+        self.declare_parameter('no_progress_sec', 3.0)
         self.no_progress_sec = self.get_parameter('no_progress_sec').value
         self._goal_best_dist = None     # closest we've gotten to the current goal
         self._goal_progress_t = None    # last time that distance improved
@@ -167,11 +169,11 @@ class CoveragePlanner(Node):
         # overhead. See docs/reactive-row-executor.md. 'nav2' stays the baseline.
         self.declare_parameter('executor', 'nav2')
         self.exec_mode = self.get_parameter('executor').value
-        self.declare_parameter('v_cruise', 0.35)         # m/s along a pass
-        self.declare_parameter('k_heading', 1.6)         # steer/rotate gain
-        self.declare_parameter('rotate_speed', 1.0)      # max rad/s (in-place turn)
-        self.declare_parameter('align_tol', 0.35)        # rad: rotate in place above this
-        self.declare_parameter('reach_tol', 0.12)        # m: waypoint reached
+        self.declare_parameter('v_cruise', 0.30)         # m/s along a pass
+        self.declare_parameter('k_heading', 2.0)         # steer/rotate gain
+        self.declare_parameter('rotate_speed', 1.2)      # max rad/s (in-place turn)
+        self.declare_parameter('align_tol', 0.30)        # rad: rotate in place above this
+        self.declare_parameter('reach_tol', 0.08)        # m: waypoint reached
         self.declare_parameter('min_transit_len', 0.7)   # m: route via Nav2 above this
         self.v_cruise = self.get_parameter('v_cruise').value
         self.k_heading = self.get_parameter('k_heading').value
@@ -306,7 +308,7 @@ class CoveragePlanner(Node):
         self.get_logger().info('coverage_planner up; waiting for /map')
 
     def _on_scan(self, msg: LaserScan) -> None:
-        """Extract forward distance to any obstacle in the robot's physical driving corridor (|y| <= 0.18m)."""
+        """Extract forward distance to any obstacle in the robot's physical driving corridor (|y| <= 0.20m)."""
         ranges = np.asarray(msg.ranges)
         if ranges.size == 0:
             return
@@ -319,10 +321,10 @@ class CoveragePlanner(Node):
         r = ranges[valid_mask]
         a = angles[valid_mask]
         # x is forward, y is lateral (left/right). Robot radius is 0.165m.
-        # Check physical driving envelope: lateral width |y| <= 0.18m, forward distance 0.12 <= x <= 0.80m
+        # Check physical driving envelope: lateral width |y| <= 0.20m, forward distance 0.12 <= x <= 0.80m
         xs = r * np.cos(a)
         ys = r * np.sin(a)
-        in_corridor = (xs >= 0.12) & (xs <= 0.80) & (np.abs(ys) <= 0.18)
+        in_corridor = (xs >= 0.12) & (xs <= 0.80) & (np.abs(ys) <= 0.20)
         if np.any(in_corridor):
             self.front_wall_dist = float(np.min(xs[in_corridor]))
         else:
@@ -629,9 +631,11 @@ class CoveragePlanner(Node):
                 for run in _contiguous_runs(minor):
                     a, b = int(run[0]), int(run[-1])
                     if b - a + 1 < min_seg_cells:
-                        continue
-                    n_sub = max(1, int(round((b - a) / substep)))
-                    ks = [int(round(a + k * (b - a) / n_sub)) for k in range(n_sub + 1)]
+                        mid = (a + b) // 2
+                        ks = [mid]
+                    else:
+                        n_sub = max(1, int(round((b - a) / substep)))
+                        ks = [int(round(a + k * (b - a) / n_sub)) for k in range(n_sub + 1)]
                     if flip:
                         ks.reverse()
                     for k in ks:
@@ -817,7 +821,7 @@ class CoveragePlanner(Node):
             # 1. First check if uncovered space can be swept with full passes (e.g. SLAM expanded during run)
             new_poses = self._plan_waypoints()
             active_poses = [p for p in new_poses if not self._covered_at(p)]
-            if len(active_poses) > 5:
+            if len(active_poses) > 0:
                 self.cached_poses = active_poses
                 self.wp_index = 0
                 self._publish_plan()
@@ -837,7 +841,7 @@ class CoveragePlanner(Node):
                         f'gap-fill pass {self.gapfill_passes}: '
                         f'{len(gaps)} uncovered spots, coverage '
                         f'{self.ext_ratio:.1%}')
-                    return False
+                    return True
 
         self.get_logger().info(
             f'coverage complete: {self.ext_ratio:.1%} covered')
@@ -871,36 +875,58 @@ class CoveragePlanner(Node):
 
         Nearest-neighbour ordered from the robot so the fill path is short.
         """
-        if self.covered_grid is None or self.free_mask is None:
+        if self.covered_grid is None or self.free_mask is None or self.map_msg is None:
             return []
         info = self.map_msg.info
         res = info.resolution
         cov = self.covered_grid >= 100
         if cov.shape != self.free_mask.shape:
             return []
-        # same reachability invariant as the main sweep: only target cells in
-        # the robot's connected component, never disconnected free islands
-        base = getattr(self, 'reachable_mask', None)
-        if base is None or base.shape != self.free_mask.shape:
-            base = self.free_mask
-        uncovered = base & ~cov                    # reachable but not cleaned
-        ys, xs = np.where(uncovered)
-        if ys.size == 0:
-            return []
-        # subsample to ~0.2 m so we cover all square portions and nooks
-        keep = ((ys % 4 == 0) & (xs % 4 == 0))
-        ys, xs = ys[keep], xs[keep]
-        if ys.size == 0:
-            return []
-        pts = [(ox_i, oy_i) for ox_i, oy_i in zip(xs.tolist(), ys.tolist())]
+
         pose = self._robot_pose()
         if pose is not None:
             self.robot_xy = (pose[0], pose[1])
             self.robot_yaw = pose[2]
         if self.robot_xy is None:
             return []
+
+        # Fresh reachability from the robot's current pose on the latest free_mask
         rcx = int((self.robot_xy[0] - info.origin.position.x) / res)
         rcy = int((self.robot_xy[1] - info.origin.position.y) / res)
+        seed = _nearest_true(self.free_mask, rcx, rcy)
+        if seed is None:
+            return []
+        base = _flood_fill(self.free_mask, seed)
+        uncovered = base & ~cov                    # reachable but not cleaned
+
+        if not np.any(uncovered):
+            return []
+
+        # Find connected components of uncovered cells so small square alcoves/nooks aren't missed
+        labeled, num_features = ndi.label(uncovered)
+        pts = []
+        for feat in range(1, num_features + 1):
+            comp_ys, comp_xs = np.where(labeled == feat)
+            if comp_ys.size == 0:
+                continue
+            if comp_ys.size <= 8:
+                # Small nook/alcove: pick centroid
+                cy = int(round(float(comp_ys.mean())))
+                cx = int(round(float(comp_xs.mean())))
+                pts.append((cx, cy))
+            else:
+                # Larger patch: sample every 3 cells (~0.15m)
+                keep = ((comp_ys % 3 == 0) & (comp_xs % 3 == 0))
+                sampled_y, sampled_x = comp_ys[keep], comp_xs[keep]
+                if sampled_y.size == 0:
+                    pts.append((int(comp_xs[0]), int(comp_ys[0])))
+                else:
+                    for px, py in zip(sampled_x.tolist(), sampled_y.tolist()):
+                        pts.append((px, py))
+
+        if not pts:
+            return []
+
         order, cur = [], (rcx, rcy)
         remaining = pts[:]
         while remaining and len(order) < 120:
@@ -1209,7 +1235,6 @@ class CoveragePlanner(Node):
                 return
             else:
                 self.wall_rebound_until = None
-                self.wall_cooldown_until = now + rclpy.duration.Duration(seconds=1.5)
                 self.bumper_touched = False
                 self.cmd_pub.publish(Twist())
 
@@ -1233,15 +1258,13 @@ class CoveragePlanner(Node):
         heading = float(np.arctan2(dy, dx))
         herr = _wrap(heading - ryaw)
 
-        # 2. Wall contact: wall reached via bumper contact or front LiDAR proximity <= 0.20m
-        # Require robot not in cooldown; for front LiDAR, also require facing the obstacle (abs(herr) < align_tol)
-        in_cooldown = (self.wall_cooldown_until is not None and now < self.wall_cooldown_until)
-        at_wall = not in_cooldown and (self.bumper_touched or (self.front_wall_dist <= 0.20 and abs(herr) < self.align_tol))
+        # 2. Wall contact: wall reached via bumper contact or front LiDAR proximity <= 0.26m while aligned
+        at_wall = self.bumper_touched or (self.front_wall_dist <= 0.26 and abs(herr) < self.align_tol)
 
         if at_wall:
             self.bumper_touched = False
             self.get_logger().info(
-                f'Wall reached (dist: {self.front_wall_dist:.2f}m) near waypoint {self.wp_index}. Rebounding and advancing to next pass.')
+                f'Obstacle/wall reached (dist: {self.front_wall_dist:.2f}m) near waypoint {self.wp_index}. Rebounding and advancing to next pass.')
 
             # Advance wp_index to the first waypoint belonging to the NEXT row
             if self.cached_poses is not None and self.wp_index < len(self.cached_poses):
@@ -1311,10 +1334,10 @@ class CoveragePlanner(Node):
         tw.angular.z = az
         if abs(herr) < self.align_tol:
             v = self.v_cruise
-            # Slow down smoothly when approaching a wall directly ahead
-            if self.front_wall_dist < 0.50:
-                factor = max(0.25, min(1.0, (self.front_wall_dist - 0.16) / 0.34))
-                v = max(0.08, self.v_cruise * factor)
+            # Slow down smoothly when approaching an obstacle directly ahead
+            if self.front_wall_dist < 0.55:
+                factor = max(0.20, min(1.0, (self.front_wall_dist - 0.24) / 0.31))
+                v = max(0.06, self.v_cruise * factor)
             # ease down into a coming in-place turn so a high cruise speed can't
             # overshoot the corner: taper over the last 0.4 m before the target
             # when the next segment turns away by more than align_tol.
@@ -1326,21 +1349,19 @@ class CoveragePlanner(Node):
                     v = max(0.08, min(v, self.v_cruise * dist / 0.4))
             tw.linear.x = v
 
-        # Anti-wheel-slip physical stall detection:
-        # If commanding forward velocity (v >= 0.08 m/s), verify physical displacement in map frame.
-        # If robot moved less than 2.5 cm in 1.0s while driving forward, it is physically blocked by an obstacle/leg!
-        # Halt motors immediately and rebound to protect the SLAM map from wheel slip distortion.
-        if not in_cooldown and abs(herr) < self.align_tol and tw.linear.x >= 0.08:
+        # Anti-wheel-slip physical stall detection (linear + angular):
+        # 1. Linear stall: if commanding forward velocity (v >= 0.08 m/s), verify physical displacement in map frame.
+        if abs(herr) < self.align_tol and tw.linear.x >= 0.08:
             if getattr(self, '_stall_check_t', None) is None:
                 self._stall_check_t = now
                 self._stall_check_pose = (rx, ry)
-            elif self._elapsed(self._stall_check_t) >= 1.0:
+            elif self._elapsed(self._stall_check_t) >= 0.6:
                 moved = float(np.hypot(rx - self._stall_check_pose[0], ry - self._stall_check_pose[1]))
                 self._stall_check_t = now
                 self._stall_check_pose = (rx, ry)
-                if moved < 0.025:  # physically blocked!
+                if moved < 0.015:  # physically blocked!
                     self.get_logger().warn(
-                        f'Physical block detected near waypoint {self.wp_index} (moved {moved*100:.1f}cm in 1.0s). Rebounding to protect SLAM map.')
+                        f'Physical block detected near waypoint {self.wp_index} (moved {moved*100:.1f}cm in 0.6s). Rebounding to protect SLAM map.')
                     self.cmd_pub.publish(Twist())  # zero motors immediately
                     self.wall_rebound_until = now + rclpy.duration.Duration(seconds=0.8)
                     tw_rev = Twist()
@@ -1370,6 +1391,34 @@ class CoveragePlanner(Node):
         else:
             self._stall_check_t = None
             self._stall_check_pose = None
+
+        # 2. Angular stall: if rotating in place (|az| >= 0.3 rad/s) but heading changed < 0.05 rad in 0.7s:
+        if abs(herr) >= self.align_tol and abs(tw.angular.z) >= 0.3:
+            if getattr(self, '_rot_stall_t', None) is None:
+                self._rot_stall_t = now
+                self._rot_stall_yaw = ryaw
+            elif self._elapsed(self._rot_stall_t) >= 0.7:
+                dyaw = abs(_wrap(ryaw - self._rot_stall_yaw))
+                self._rot_stall_t = now
+                self._rot_stall_yaw = ryaw
+                if dyaw < 0.05:  # rotation blocked by obstacle!
+                    self.get_logger().warn(
+                        f'Rotational block detected near waypoint {self.wp_index} (turned {dyaw:.2f} rad in 0.7s). Rebounding.')
+                    self.cmd_pub.publish(Twist())
+                    self.wall_rebound_until = now + rclpy.duration.Duration(seconds=0.8)
+                    tw_rev = Twist()
+                    tw_rev.linear.x = -0.10
+                    self.cmd_pub.publish(tw_rev)
+                    self.wp_index += 1
+                    self.wp_retries = 0
+                    self.consecutive_skips = 0
+                    self._drive_best_dist = None
+                    self._drive_best_herr = None
+                    self._drive_progress_t = now
+                    return
+        else:
+            self._rot_stall_t = None
+            self._rot_stall_yaw = None
 
         self.cmd_pub.publish(tw)
 
