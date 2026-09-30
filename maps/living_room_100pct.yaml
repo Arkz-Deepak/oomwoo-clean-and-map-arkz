@@ -1,4 +1,4 @@
-image: living_room.pgm
+image: living_room_100pct.pgm
 mode: trinary
 resolution: 0.050000
 origin: [-4.897084, -2.861851, 0.0]

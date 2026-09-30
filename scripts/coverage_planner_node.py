@@ -40,6 +40,7 @@ planner under test consumes the same grid the grader scores with, so the
 sim pass certifies the sweep + the harness loop, not a standalone estimator.
 """
 
+import os
 from typing import List, Optional
 
 from geometry_msgs.msg import Point, PoseStamped, PoseWithCovarianceStamped, Twist
@@ -423,6 +424,54 @@ class CoveragePlanner(Node):
             cleaned = int(np.sum((self.covered_grid >= 100) & self.free_mask))
             self.ext_ratio = float(cleaned / self.total_free_cells)
             self.ratio_pub.publish(Float32(data=self.ext_ratio))
+            if self.ext_ratio >= 0.80 and not getattr(self, '_saved_80', False):
+                self._saved_80 = True
+                self._save_map()
+            if self.ext_ratio >= 0.90 and not getattr(self, '_saved_90', False):
+                self._saved_90 = True
+                self._save_map()
+
+    def _save_map(self, filepath_no_ext: str = '/home/deepak-r/Projects/oomwoo-clean-and-map-arkz/maps/living_room_100pct') -> None:
+        """Save current SLAM occupancy grid map to disk as PGM and YAML."""
+        if self.map_msg is None:
+            return
+        try:
+            targets = [filepath_no_ext]
+            lr_path = '/home/deepak-r/Projects/oomwoo-clean-and-map-arkz/maps/living_room'
+            if lr_path not in targets:
+                targets.append(lr_path)
+            for path in targets:
+                os.makedirs(os.path.dirname(path), exist_ok=True)
+                info = self.map_msg.info
+                h, w = info.height, info.width
+                res = info.resolution
+                ox, oy = info.origin.position.x, info.origin.position.y
+                grid = np.asarray(self.map_msg.data, dtype=np.int8).reshape(h, w)
+
+                grid_flipped = np.flipud(grid)
+                pgm_data = np.full((h, w), 205, dtype=np.uint8)
+                pgm_data[grid_flipped == 0] = 254
+                pgm_data[grid_flipped >= OCC_THRESH] = 0
+
+                pgm_path = f"{path}.pgm"
+                with open(pgm_path, "wb") as f:
+                    f.write(f"P5\n{w} {h}\n255\n".encode("ascii"))
+                    f.write(pgm_data.tobytes())
+
+                yaml_path = f"{path}.yaml"
+                pgm_filename = os.path.basename(pgm_path)
+                with open(yaml_path, "w") as f:
+                    f.write(f"image: {pgm_filename}\n")
+                    f.write(f"mode: trinary\n")
+                    f.write(f"resolution: {res:.6f}\n")
+                    f.write(f"origin: [{ox:.6f}, {oy:.6f}, 0.0]\n")
+                    f.write(f"negate: 0\n")
+                    f.write(f"occupied_thresh: 0.65\n")
+                    f.write(f"free_thresh: 0.25\n")
+
+                self.get_logger().info(f"SLAM Map successfully saved: {yaml_path}")
+        except Exception as e:
+            self.get_logger().error(f"Failed to save map: {e}")
 
     def _on_keepout(self, msg: OccupancyGrid) -> None:
         # keepout filter mask uses the same grid geometry; occupied => no-go
@@ -630,12 +679,15 @@ class CoveragePlanner(Node):
                 minor = np.where(m[:, i] if vertical else m[i, :])[0]
                 for run in _contiguous_runs(minor):
                     a, b = int(run[0]), int(run[-1])
-                    if b - a + 1 < min_seg_cells:
+                    end_clearance = max(1, int(round(0.08 / res)))
+                    if b - a + 1 <= 2 * end_clearance:
                         mid = (a + b) // 2
                         ks = [mid]
                     else:
-                        n_sub = max(1, int(round((b - a) / substep)))
-                        ks = [int(round(a + k * (b - a) / n_sub)) for k in range(n_sub + 1)]
+                        a_eff = a + end_clearance
+                        b_eff = b - end_clearance
+                        n_sub = max(1, int(round((b_eff - a_eff) / substep)))
+                        ks = [int(round(a_eff + k * (b_eff - a_eff) / n_sub)) for k in range(n_sub + 1)]
                     if flip:
                         ks.reverse()
                     for k in ks:
@@ -782,6 +834,7 @@ class CoveragePlanner(Node):
                 return
             self.cached_poses = poses
             self.wp_index = 0
+            self.last_planned_free_cells = getattr(self, 'total_free_cells', 0)
             self._publish_plan()
             self.get_logger().info(
                 f'coverage plan: {len(poses)} waypoints, executing sequentially')
@@ -818,18 +871,22 @@ class CoveragePlanner(Node):
         # passes are spent or nothing uncovered remains.
         # If coverage target not reached, check for uncleaned sweepable space or gap-fill
         if not self.stop_at_target or self.ext_ratio < self.coverage_target:
-            # 1. First check if uncovered space can be swept with full passes (e.g. SLAM expanded during run)
-            new_poses = self._plan_waypoints()
-            active_poses = [p for p in new_poses if not self._covered_at(p)]
-            if len(active_poses) > 0:
-                self.cached_poses = active_poses
-                self.wp_index = 0
-                self._publish_plan()
-                self.get_logger().info(
-                    f'Sweeping newly expanded/uncovered area: {len(active_poses)} waypoints (coverage {self.ext_ratio:.1%})')
-                return True
+            # 1. If SLAM has significantly expanded the reachable area (> 15% increase in free cells), sweep the newly discovered area
+            last_cells = getattr(self, 'last_planned_free_cells', 0)
+            current_cells = getattr(self, 'total_free_cells', 0)
+            if last_cells > 0 and current_cells > last_cells * 1.15:
+                new_poses = self._plan_waypoints()
+                active_poses = [p for p in new_poses if not self._covered_at(p)]
+                if len(active_poses) >= 10:
+                    self.last_planned_free_cells = current_cells
+                    self.cached_poses = active_poses
+                    self.wp_index = 0
+                    self._publish_plan()
+                    self.get_logger().info(
+                        f'SLAM expanded map (+{current_cells - last_cells} cells); sweeping {len(active_poses)} waypoints (coverage {self.ext_ratio:.1%})')
+                    return True
 
-            # 2. Targeted gap-fill pass for isolated clusters
+            # 2. Targeted gap-fill pass for isolated clusters/alcoves
             if self.gapfill_passes < self.max_gapfill:
                 gaps = self._gapfill_waypoints()
                 if gaps:
@@ -848,6 +905,7 @@ class CoveragePlanner(Node):
         self.finished = True
         self.active_pub.publish(Bool(data=False))
         self.cmd_pub.publish(Twist())
+        self._save_map()
         return False
 
     def _send_goal_to(self, p) -> None:
@@ -1258,24 +1316,37 @@ class CoveragePlanner(Node):
         heading = float(np.arctan2(dy, dx))
         herr = _wrap(heading - ryaw)
 
-        # 2. Wall contact: wall reached via bumper contact or front LiDAR proximity <= 0.26m while aligned
-        at_wall = self.bumper_touched or (self.front_wall_dist <= 0.26 and abs(herr) < self.align_tol)
+        # 2. Wall contact: wall reached via bumper contact or front LiDAR proximity <= 0.28m while aligned
+        at_wall = self.bumper_touched or (self.front_wall_dist <= 0.28 and abs(herr) < self.align_tol)
 
         if at_wall:
             self.bumper_touched = False
             self.get_logger().info(
                 f'Obstacle/wall reached (dist: {self.front_wall_dist:.2f}m) near waypoint {self.wp_index}. Rebounding and advancing to next pass.')
 
-            # Advance wp_index to the first waypoint belonging to the NEXT row
-            if self.cached_poses is not None and self.wp_index < len(self.cached_poses):
+            # Advance wp_index to a forward waypoint in the NEXT row (away from this wall)
+            if getattr(self, 'gapfill_passes', 0) > 0:
+                self.wp_index += 1
+            elif self.cached_poses is not None and self.wp_index < len(self.cached_poses):
                 cur_p = self.cached_poses[self.wp_index].pose.position
                 next_idx = self.wp_index + 1
                 while next_idx < len(self.cached_poses):
                     np_pos = self.cached_poses[next_idx].pose.position
-                    # Check distance perpendicular to pass direction (row change >= 0.18m)
                     d_row = max(abs(np_pos.y - cur_p.y), abs(np_pos.x - cur_p.x))
                     if d_row >= 0.18:
                         break
+                    next_idx += 1
+                # Skip waypoints in next row that are too close to current wall location
+                while next_idx < len(self.cached_poses):
+                    np_pos = self.cached_poses[next_idx].pose.position
+                    dist_to_robot = ((np_pos.x - rx)**2 + (np_pos.y - ry)**2)**0.5
+                    if dist_to_robot >= 0.35:
+                        break
+                    next_next = next_idx + 1
+                    if next_next < len(self.cached_poses):
+                        nn_pos = self.cached_poses[next_next].pose.position
+                        if max(abs(nn_pos.y - np_pos.y), abs(nn_pos.x - np_pos.x)) >= 0.18:
+                            break
                     next_idx += 1
                 self.wp_index = next_idx
             else:
@@ -1355,21 +1426,23 @@ class CoveragePlanner(Node):
             if getattr(self, '_stall_check_t', None) is None:
                 self._stall_check_t = now
                 self._stall_check_pose = (rx, ry)
-            elif self._elapsed(self._stall_check_t) >= 0.6:
+            elif self._elapsed(self._stall_check_t) >= 0.5:
                 moved = float(np.hypot(rx - self._stall_check_pose[0], ry - self._stall_check_pose[1]))
                 self._stall_check_t = now
                 self._stall_check_pose = (rx, ry)
-                if moved < 0.015:  # physically blocked!
+                if moved < 0.012:  # physically blocked!
                     self.get_logger().warn(
-                        f'Physical block detected near waypoint {self.wp_index} (moved {moved*100:.1f}cm in 0.6s). Rebounding to protect SLAM map.')
+                        f'Physical block detected near waypoint {self.wp_index} (moved {moved*100:.1f}cm in 0.5s). Rebounding to protect SLAM map.')
                     self.cmd_pub.publish(Twist())  # zero motors immediately
                     self.wall_rebound_until = now + rclpy.duration.Duration(seconds=0.8)
                     tw_rev = Twist()
                     tw_rev.linear.x = -0.10
                     self.cmd_pub.publish(tw_rev)
 
-                    # Advance wp_index to the first waypoint belonging to the NEXT row
-                    if self.cached_poses is not None and self.wp_index < len(self.cached_poses):
+                    # Advance wp_index to a forward waypoint in the NEXT row
+                    if getattr(self, 'gapfill_passes', 0) > 0:
+                        self.wp_index += 1
+                    elif self.cached_poses is not None and self.wp_index < len(self.cached_poses):
                         cur_p = self.cached_poses[self.wp_index].pose.position
                         next_idx = self.wp_index + 1
                         while next_idx < len(self.cached_poses):
@@ -1377,6 +1450,17 @@ class CoveragePlanner(Node):
                             d_row = max(abs(np_pos.y - cur_p.y), abs(np_pos.x - cur_p.x))
                             if d_row >= 0.18:
                                 break
+                            next_idx += 1
+                        while next_idx < len(self.cached_poses):
+                            np_pos = self.cached_poses[next_idx].pose.position
+                            dist_to_robot = ((np_pos.x - rx)**2 + (np_pos.y - ry)**2)**0.5
+                            if dist_to_robot >= 0.35:
+                                break
+                            next_next = next_idx + 1
+                            if next_next < len(self.cached_poses):
+                                nn_pos = self.cached_poses[next_next].pose.position
+                                if max(abs(nn_pos.y - np_pos.y), abs(nn_pos.x - np_pos.x)) >= 0.18:
+                                    break
                             next_idx += 1
                         self.wp_index = next_idx
                     else:
