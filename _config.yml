@@ -1,0 +1,5 @@
+theme: jekyll-theme-slate
+title: "Oomwoo: Autonomous Vacuum Cleaner Clean & Map"
+description: "Open-source vacuum robot ROS 2 navigation, SLAM, and safe gap-fill coverage system"
+show_downloads: false
+google_analytics: null
