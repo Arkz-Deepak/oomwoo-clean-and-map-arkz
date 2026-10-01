@@ -194,7 +194,7 @@ class CoveragePlanner(Node):
         self.wp_retries = 0
         self.first_map_time = None
         self.gapfill_passes = 0
-        self.declare_parameter('max_gapfill', 10)
+        self.declare_parameter('max_gapfill', 2)
         self.max_gapfill = self.get_parameter('max_gapfill').value
         # Wedge escape: when Nav2 gives up on several waypoints in a row the
         # robot is usually stuck in a pocket the inflated costmap paints lethal
@@ -955,7 +955,12 @@ class CoveragePlanner(Node):
         if seed is None:
             return []
         base = _flood_fill(self.free_mask, seed)
-        uncovered = base & ~cov                    # reachable but not cleaned
+        # Safety clearance: only target uncovered points that have at least 0.28m clearance
+        # from any obstacles. Inaccessible crevices (< 0.28m) near chair legs/walls cannot be
+        # driven into by the robot chassis (radius 0.17m) and will only trigger wall rebounds/slip.
+        clearance_cells = max(1, int(round(0.28 / res)))
+        safe_drive = _erode(base, clearance_cells)
+        uncovered = safe_drive & ~cov                    # reachable, safe to navigate to, and uncleaned
 
         if not np.any(uncovered):
             return []
@@ -1434,6 +1439,7 @@ class CoveragePlanner(Node):
                     self.get_logger().warn(
                         f'Physical block detected near waypoint {self.wp_index} (moved {moved*100:.1f}cm in 0.5s). Rebounding to protect SLAM map.')
                     self.cmd_pub.publish(Twist())  # zero motors immediately
+                    self.wedge_zones.append((rx, ry, 0.40))  # Record pocket so we never revisit
                     self.wall_rebound_until = now + rclpy.duration.Duration(seconds=0.8)
                     tw_rev = Twist()
                     tw_rev.linear.x = -0.10
@@ -1530,6 +1536,21 @@ def _dilate(mask: np.ndarray, radius: int) -> np.ndarray:
         shifted[:-1, :] |= out[1:, :]
         shifted[:, 1:] |= out[:, :-1]
         shifted[:, :-1] |= out[:, 1:]
+        out = shifted
+    return out
+
+
+def _erode(mask: np.ndarray, radius: int) -> np.ndarray:
+    """Binary erosion by a square structuring element of given radius."""
+    if radius <= 0:
+        return mask.copy()
+    out = mask.copy()
+    for _ in range(radius):
+        shifted = out.copy()
+        shifted[1:, :] &= out[:-1, :]
+        shifted[:-1, :] &= out[1:, :]
+        shifted[:, 1:] &= out[:, :-1]
+        shifted[:, :-1] &= out[:, 1:]
         out = shifted
     return out
 
